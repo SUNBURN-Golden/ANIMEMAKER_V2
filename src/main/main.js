@@ -1,5 +1,5 @@
 'use strict';
-// AnimeMaker - Electron 메인 프로세스
+// AnimeMaker V2 - Electron 메인 프로세스 (AnimeMaker V1 에서 갈라져 나옴)
 const { app, BrowserWindow, ipcMain, dialog, shell, clipboard, nativeImage, Menu } = require('electron');
 const { spawn } = require('child_process');
 const fs = require('fs');
@@ -49,7 +49,7 @@ function createWindow() {
     height: 900,
     minWidth: 1040,
     minHeight: 680,
-    title: 'AnimeMaker - AI 뮤직비디오 자동 제작기',
+    title: 'AnimeMaker V2 - 셀 애니메이션 뮤직비디오 제작기',
     icon: path.join(__dirname, '..', 'renderer', 'assets', 'icon.png'),
     backgroundColor: '#f6f5fb',
     show: false,
@@ -100,13 +100,13 @@ function openConsole(title, lines, { powershell = false } = {}) {
         `$host.UI.RawUI.WindowTitle = '${title.replace(/'/g, "''")}'`,
         ...lines,
         "Write-Host ''",
-        "Write-Host '끝났습니다. 이 창을 닫고 AnimeMaker 에서 [상태 확인] 을 눌러 주세요.'",
+        "Write-Host '끝났습니다. 이 창을 닫고 AnimeMaker V2 에서 [상태 확인] 을 눌러 주세요.'",
       ].join('\r\n');
       fs.writeFileSync(file, `﻿${body}`, 'utf8');
       spawn('cmd.exe', ['/c', 'start', '""', 'powershell.exe', '-NoExit', '-ExecutionPolicy', 'Bypass', '-File', file], { detached: true, windowsHide: false });
     } else {
       const file = path.join(dir, `${Date.now()}.cmd`);
-      const body = ['@echo off', 'chcp 65001 > nul', `title ${title}`, ...lines, 'echo.', 'echo 끝났습니다. 이 창을 닫고 AnimeMaker 에서 [상태 확인] 을 눌러 주세요.', 'pause'].join('\r\n');
+      const body = ['@echo off', 'chcp 65001 > nul', `title ${title}`, ...lines, 'echo.', 'echo 끝났습니다. 이 창을 닫고 AnimeMaker V2 에서 [상태 확인] 을 눌러 주세요.', 'pause'].join('\r\n');
       fs.writeFileSync(file, body, 'utf8');
       spawn('cmd.exe', ['/c', 'start', '""', file], { detached: true, windowsHide: false });
     }
@@ -289,7 +289,7 @@ function registerIpc() {
 }
 
 app.whenReady().then(() => {
-  if (process.platform === 'win32') app.setAppUserModelId('com.sunburngolden.animemaker');
+  if (process.platform === 'win32') app.setAppUserModelId('com.animemaker.v2');
   store = new Store({
     userDataDir: app.getPath('userData'),
     documentsDir: app.getPath('documents'),
@@ -310,5 +310,5 @@ app.on('window-all-closed', async () => {
 });
 
 process.on('unhandledRejection', (e) => {
-  try { fs.appendFileSync(path.join(os.tmpdir(), 'animemaker-error.log'), `${new Date().toISOString()} ${e && e.stack}\n`); } catch (_) { /* noop */ }
+  try { fs.appendFileSync(path.join(os.tmpdir(), 'animemaker-v2-error.log'), `${new Date().toISOString()} ${e && e.stack}\n`); } catch (_) { /* noop */ }
 });

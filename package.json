@@ -1,8 +1,8 @@
 {
-  "name": "animemaker",
-  "productName": "AnimeMaker",
-  "version": "0.1.0",
-  "description": "주제만 넣으면 스토리보드 → 키프레임 → 영상 클립 → 음악 → 최종 영상까지 자동으로 만들어 주는 윈도우용 AI 숏폼 제작기",
+  "name": "animemaker-v2",
+  "productName": "AnimeMaker V2",
+  "version": "2.0.0",
+  "description": "노래·가사와 고정 주인공(캐릭터 파일)으로 80~90년대 손그림 셀 애니메이션 감성의 뮤직비디오를 에피소드처럼 만들어 주는 윈도우용 AI 제작기 (AnimeMaker V1 에서 갈라져 나옴)",
   "main": "src/main/main.js",
   "author": "SUNBURN-Golden",
   "license": "UNLICENSED",
@@ -22,8 +22,8 @@
     "electron-builder": "^26.15.3"
   },
   "build": {
-    "appId": "com.sunburngolden.animemaker",
-    "productName": "AnimeMaker",
+    "appId": "com.animemaker.v2",
+    "productName": "AnimeMaker V2",
     "copyright": "SUNBURN-Golden",
     "directories": {
       "output": "dist",
@@ -61,15 +61,15 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "AnimeMaker",
+      "shortcutName": "AnimeMaker V2",
       "installerLanguages": [
         "ko_KR"
       ],
       "language": "1042",
-      "artifactName": "AnimeMaker-${version}-setup.${ext}"
+      "artifactName": "AnimeMaker-V2-${version}-setup.${ext}"
     },
     "portable": {
-      "artifactName": "AnimeMaker-${version}-portable.${ext}"
+      "artifactName": "AnimeMaker-V2-${version}-portable.${ext}"
     }
   }
 }
