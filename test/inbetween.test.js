@@ -111,6 +111,9 @@ test('RIFE engine: middle drawing half way (GPU, else CPU)', { skip: rifeSkip, t
   const r = await IB.makeInbetween({ a, b, outDir: path.join(dir, 'ib'), engine: 'rife', rife, keyColor: K.KEY_GREEN });
   assert.strictEqual(r.engine, 'rife');
   assert.ok(['gpu', 'cpu'].includes(r.device));
+  // 알파가 있는 그림(a, b)도 RIFE 에는 RGB 로 넘긴다 (PNG 색 형식 2 = RGB, 6 = RGBA). 윈도우판 RIFE 는 알파가 있으면 그림이 깨진다
+  assert.strictEqual(fs.readFileSync(a)[25], 6);
+  for (const k of ['a', 'b']) assert.strictEqual(fs.readFileSync(path.join(dir, 'ib', `${r.hash}_${k}.png`))[25], 2, `${k} → RGB`);
   const [ca, cm, cb] = [await centroidX(a), await centroidX(r.file), await centroidX(b)];
   assert.ok(Math.abs(cm - (ca + cb) / 2) < 5, `midpoint ${ca.toFixed(1)} → ${cm.toFixed(1)} → ${cb.toFixed(1)}`);
   assert.strictEqual(IB.resolveEngine('auto').engine, 'rife');

@@ -12,7 +12,7 @@ const { spawn } = require('child_process');
 const { runFfmpeg, probe } = require('./ffmpeg');
 const K = require('./keyer');
 
-const IB_VERSION = 3;
+const IB_VERSION = 4; // 4: RIFE 입력을 알파 없는 RGB 로 (윈도우에서 깨진 사이 그림 캐시는 다시 만든다)
 const RIFE_MODEL = 'rife-v4.6';
 const TOO_DIFFERENT = 0.45; // 이보다 다르면 사이 그림 없이 그대로 넘긴다 (keyer.celDifference)
 // 윈도우: 실행에 필요한 DLL 이 없어서 켜지지 못함 (0xC0000135). RIFE 는 CPU 로 돌릴 때도 vulkan-1.dll 이 있어야 켜진다.
@@ -103,6 +103,15 @@ async function ffmpegMid(a, b, out, { signal } = {}) {
   return { file: out, device: 'cpu' };
 }
 
+/**
+ * RIFE 에 넣을 그림: 알파 없는 RGB PNG, 크기는 A 에 맞춤.
+ * 윈도우판 RIFE 는 알파가 있는 PNG 를 4채널(BGRA)로 읽고도 3채널로 계산해서 그림이 깨진다 (리눅스판은 늘 3채널로 읽음).
+ */
+async function rgbInput(src, out, size, signal) {
+  await runFfmpeg(['-y', '-i', src, '-vf', `scale=${size.width}:${size.height},format=rgb24`, '-frames:v', '1', out], { signal });
+  return out;
+}
+
 /** 두 그림 크기가 다르면 B 를 A 크기로 맞춘 복사본 */
 async function sameSize(a, b, tmp, signal) {
   const [ia, ib] = [await probe(a), await probe(b)];
@@ -139,11 +148,19 @@ async function makeInbetween(o) {
   const plate = path.join(o.outDir, `${hash}_plate.png`);
   const file = o.keyColor ? path.join(o.outDir, `${hash}.png`) : plate;
   if (K.exists(file) && K.exists(plate)) return { file, plate, engine: o.engine, device: 'cache', hash, cached: true };
-  const b = await sameSize(o.a, o.b, path.join(o.outDir, `${hash}_b.png`), o.signal);
-  const r = o.engine === 'rife' ? await rifeMid(o.a, b, plate, o.rife, { signal: o.signal }) : await ffmpegMid(o.a, b, plate, { signal: o.signal });
+  let r;
+  if (o.engine === 'rife') {
+    const size = await probe(o.a);
+    const a = await rgbInput(o.a, path.join(o.outDir, `${hash}_a.png`), size, o.signal);
+    const b = await rgbInput(o.b, path.join(o.outDir, `${hash}_b.png`), size, o.signal);
+    r = await rifeMid(a, b, plate, o.rife, { signal: o.signal });
+  } else {
+    const b = await sameSize(o.a, o.b, path.join(o.outDir, `${hash}_b.png`), o.signal);
+    r = await ffmpegMid(o.a, b, plate, { signal: o.signal });
+  }
   if (o.keyColor) {
     const res = await K.processCel(plate, { celOut: file, plateOut: path.join(o.outDir, `${hash}_rekey.png`), keyColor: o.keyColor, exactKey: true, signal: o.signal });
-    if (!res.keyed) throw new Error('사이 그림의 배경을 뺄 수 없어요.');
+    if (!res.keyed) throw new Error(`사이 그림의 배경을 뺄 수 없어요. (${res.reason || '알 수 없음'})`);
   }
   return { file, plate, engine: o.engine, device: r.device, hash };
 }
