@@ -87,7 +87,24 @@ test('engine choice: off / ffmpeg / auto falls back to ffmpeg when RIFE is missi
 });
 
 const rife = process.env.ANIMEMAKER_RIFE_DIR ? IB.findRife() : null;
-test('RIFE engine: middle drawing half way (GPU, else CPU)', { skip: rife ? false : 'ANIMEMAKER_RIFE_DIR 에 RIFE 가 없어서 건너뜀', timeout: 300000 }, async () => {
+// 윈도우의 RIFE 는 vulkan-1.dll(그래픽 드라이버)이 있어야 켜진다. 윈도우가 DLL 을 찾는 곳: 실행 파일 옆 → System32 → Windows → PATH
+const winDir = process.env.SystemRoot || 'C:\\Windows';
+const vulkanDll = process.platform !== 'win32' || [rife && rife.dir, path.join(winDir, 'System32'), winDir,
+  ...(process.env.PATH || process.env.Path || '').split(';')].some((d) => d && fs.existsSync(path.join(d, 'vulkan-1.dll')));
+// ANIMEMAKER_REQUIRE_RIFE=1 이면 건너뛰지 않는다 (CI 에서 RIFE 가 정말 돌았는지 확인용)
+const rifeSkip = process.env.ANIMEMAKER_REQUIRE_RIFE ? false
+  : !rife ? 'ANIMEMAKER_RIFE_DIR 에 RIFE 가 없어서 건너뜀'
+    : !vulkanDll ? 'vulkan-1.dll 이 없는 윈도우 (아래 테스트가 대신 확인)' : false;
+
+test('RIFE without Vulkan (Windows): stops with a clear message so the pipeline switches to ffmpeg', { skip: rife && !vulkanDll ? false : 'vulkan-1.dll 이 없는 윈도우에서만', timeout: 60000 }, async () => {
+  const dir = tmp();
+  const a = await boxCel(path.join(dir, 'a.png'), 100);
+  const b = await boxCel(path.join(dir, 'b.png'), 140);
+  await assert.rejects(IB.makeInbetween({ a, b, outDir: path.join(dir, 'ib'), engine: 'rife', rife, keyColor: K.KEY_GREEN }),
+    /Vulkan\(vulkan-1\.dll\)이 없어서/);
+});
+
+test('RIFE engine: middle drawing half way (GPU, else CPU)', { skip: rifeSkip, timeout: 300000 }, async () => {
   const dir = tmp();
   const a = await boxCel(path.join(dir, 'a.png'), 100);
   const b = await boxCel(path.join(dir, 'b.png'), 140);

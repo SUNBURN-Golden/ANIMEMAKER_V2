@@ -25,7 +25,34 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: 사이 그림 엔진 RIFE 캐시
+        uses: actions/cache@v4
+        with:
+          path: vendor/rife/.cache
+          key: rife-ncnn-vulkan-20221029-${{ runner.os }}
+      - name: 사이 그림 엔진 RIFE 받기 (테스트에서 직접 돌려 보기)
+        run: node scripts/fetch-rife.js
+      - name: Vulkan 로더 (리눅스, 없을 때만 설치)
+        if: runner.os == 'Linux'
+        run: ldconfig -p | grep -q libvulkan.so.1 || (sudo apt-get update -qq && sudo apt-get install -y -qq libvulkan1)
       - run: npm test
+        env:
+          ANIMEMAKER_RIFE_DIR: ${{ github.workspace }}/vendor/rife/${{ runner.os == 'Windows' && 'win32' || 'linux' }}-x64
+      - name: 윈도우 - Vulkan 로더를 넣고 RIFE 를 실제로 돌려 보기 (그래픽카드가 없으면 CPU)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          ANIMEMAKER_RIFE_DIR: ${{ github.workspace }}\vendor\rife\win32-x64
+          ANIMEMAKER_REQUIRE_RIFE: '1'
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP 'vulkan-rt.zip'
+          Invoke-WebRequest -Uri 'https://sdk.lunarg.com/sdk/download/1.4.363.0/windows/vulkan-runtime-components.zip' -OutFile $zip
+          $sha = (Get-FileHash $zip -Algorithm SHA256).Hash
+          if ($sha -ne 'A25A927AA8B9F0371048F1861CF88AC3B9BC9B1FB332C42D897C8AB32695769A') { throw "Vulkan 런타임 SHA256 이 다릅니다: $sha" }
+          Expand-Archive $zip -DestinationPath (Join-Path $env:RUNNER_TEMP 'vulkan-rt')
+          Copy-Item (Join-Path $env:RUNNER_TEMP 'vulkan-rt\VulkanRT-X64-1.4.363.0-Components\x64\vulkan-1.dll') $env:ANIMEMAKER_RIFE_DIR
+          node --test --test-reporter=spec test/inbetween.test.js
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   windows-installer:
     name: AnimeMaker V2 Windows 설치 파일 (.exe)
@@ -48,6 +75,13 @@ jobs:
         run: npx electron-builder --win --x64 --publish never
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - name: 설치 파일 안에 RIFE 가 들어갔는지 확인
+        shell: pwsh
+        run: |
+          foreach ($f in 'rife-ncnn-vulkan.exe', 'vcomp140.dll', 'LICENSE', 'rife-v4.6\flownet.bin', 'rife-v4.6\flownet.param') {
+            if (-not (Test-Path (Join-Path 'dist\win-unpacked\resources\rife' $f))) { throw "설치 파일에 rife\$f 가 없습니다" }
+          }
+          Get-ChildItem -Recurse dist\win-unpacked\resources\rife | Select-Object FullName, Length
       - name: 결과물 올리기
         uses: actions/upload-artifact@v4
         with:

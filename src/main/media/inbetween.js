@@ -15,6 +15,8 @@ const K = require('./keyer');
 const IB_VERSION = 3;
 const RIFE_MODEL = 'rife-v4.6';
 const TOO_DIFFERENT = 0.45; // 이보다 다르면 사이 그림 없이 그대로 넘긴다 (keyer.celDifference)
+// 윈도우: 실행에 필요한 DLL 이 없어서 켜지지 못함 (0xC0000135). RIFE 는 CPU 로 돌릴 때도 vulkan-1.dll 이 있어야 켜진다.
+const DLL_NOT_FOUND = [3221225781, -1073741515];
 
 function rifeBinName(platform = process.platform) {
   return platform === 'win32' ? 'rife-ncnn-vulkan.exe' : 'rife-ncnn-vulkan';
@@ -66,16 +68,20 @@ async function rifeMid(a, b, out, rife, { signal } = {}) {
   // RIFE 는 자기 폴더에서 실행하므로 경로는 모두 절대 경로로
   [a, b, out] = [a, b, out].map((p) => path.resolve(p));
   const tries = gpuBroken ? [['-g', '-1']] : [[], ['-g', '-1']];
-  let last = '';
+  let last = {};
   for (const extra of tries) {
     try { fs.unlinkSync(out); } catch (_) { /* 없음 */ }
     const r = await run(rife.bin, ['-0', a, '-1', b, '-o', out, '-m', rife.model, ...extra], { cwd: rife.dir, signal });
     if (signal && signal.aborted) throw Object.assign(new Error('사용자가 중지했습니다.'), { name: 'AbortError' });
     if (K.exists(out)) return { file: out, device: extra.length ? 'cpu' : 'gpu' };
-    last = r.err;
+    last = r;
+    if (DLL_NOT_FOUND.includes(r.code)) break; // CPU 로 다시 해도 똑같이 못 켜진다
     if (!extra.length) gpuBroken = true;
   }
-  throw new Error(`RIFE 가 사이 그림을 만들지 못했습니다: ${String(last).split('\n').filter(Boolean).slice(-2).join(' ')}`);
+  const why = DLL_NOT_FOUND.includes(last.code)
+    ? '이 PC 에는 그래픽 드라이버의 Vulkan(vulkan-1.dll)이 없어서 RIFE 를 켤 수 없어요.'
+    : String(last.err || '').split('\n').filter(Boolean).slice(-2).join(' ');
+  throw new Error(`RIFE 가 사이 그림을 만들지 못했습니다: ${why}`);
 }
 
 /**

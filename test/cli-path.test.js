@@ -51,7 +51,7 @@ test('윈도우: Codex 공식 설치 위치(%LOCALAPPDATA%\\Programs\\OpenAI\\Co
   }
 });
 
-test('리눅스·맥: 공식 설치 위치(~/.local/bin)에서 찾는다', { skip: isWin ? '윈도우가 아님' : false }, () => {
+test('리눅스·맥: 공식 설치 위치(~/.local/bin)에서 찾는다', { skip: isWin ? '리눅스·맥 전용' : false }, () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'am-home-'));
   fs.mkdirSync(path.join(tmp, '.local', 'bin'), { recursive: true });
   const exe = path.join(tmp, '.local', 'bin', 'am-test-codex');
