@@ -204,6 +204,7 @@
       h('div', { class: 'tags' },
         h('span', { class: 'chip' }, w.aspect),
         h('span', { class: 'chip' }, `컷 ${w.minClips}~${w.maxClips}개`),
+        h('span', { class: 'chip' }, { ghibli: '🌿 지브리식 움직임', full: '🏃 전체 움직임', limited: '🖼 리미티드' }[w.motionMode || 'ghibli'] || '🌿 지브리식 움직임'),
         h('span', { class: 'chip' }, w.drawingBudget > 0 ? `그림 최대 ${w.drawingBudget}장` : '그림 장수 자동'),
         w.builtin ? null : h('span', { class: 'chip pri' }, '내 워크플로우')))));
     };

@@ -231,6 +231,9 @@
         class: 'btn primary small',
         onclick: () => AM.safe(() => window.api.saveSettings({ onLimit: onLimit.value, limitWaitMinutes: Number(waitMin.value), limitMaxHours: Number(maxH.value), concurrency: { image: Number(ci.value) } }), '저장했어요'),
       }, '저장')),
-      h('div', { class: 'small muted', style: { marginTop: '10px' } }, `렌더링 엔진: 앱 안의 합성기 + ffmpeg (${info.ffmpeg}) — 따로 설치할 것 없어요.`));
+      h('div', { class: 'small muted', style: { marginTop: '10px' } }, `렌더링 엔진: 앱 안의 합성기 + ffmpeg (${info.ffmpeg}) — 따로 설치할 것 없어요.`),
+      h('div', { class: 'small muted', style: { marginTop: '4px' } }, info.rife && info.rife.found
+        ? `사이 그림: RIFE 준비됨 (${info.rife.dir}) — 그래픽카드(Vulkan)가 되면 빠르고, 안 되면 CPU 로 해요. 워크플로우에서 ffmpeg 나 끄기로 바꿀 수 있어요.`
+        : '사이 그림: RIFE 가 없어서 ffmpeg 로 만들어요 (설치 파일에는 RIFE 가 들어 있어요). 워크플로우의 "사이 그림" 에서 고를 수 있어요.'));
   }
 }(window.AM));

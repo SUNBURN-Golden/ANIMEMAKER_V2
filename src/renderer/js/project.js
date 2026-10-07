@@ -25,6 +25,7 @@
   function url(snap, rel, v) { return AM.fileUrl(abs(snap, rel), v); }
   function aspectCss(a) { return ({ '9:16': '9 / 16', '16:9': '16 / 9', '1:1': '1 / 1', '4:5': '4 / 5' })[a] || '16 / 9'; }
   function dcolor(id) { return DCOLORS[Math.max(0, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.indexOf(String(id).slice(-1))) % DCOLORS.length]; }
+  const MODE_KO = { ghibli: '🌿 지브리식', full: '🏃 전체 움직임', limited: '🖼 리미티드' };
   function drawingOf(snap, shotNo, id) { return (snap.drawings || []).find((d) => d.shot === shotNo && d.id === id); }
 
   AM.views.project = async function project(id) {
@@ -117,9 +118,12 @@
         return;
       }
       if (w.kind === 'review') {
-        el.appendChild(h('div', { class: 'wait-card' }, h('h3', null, '👀 확인해 주세요'), h('div', null, w.message),
+        const est = w.key === 'review:drawings' && snap.xsheet && snap.xsheet.estimate;
+        el.appendChild(h('div', { class: 'wait-card' }, h('h3', null, est ? '🧮 그림을 그리기 전에 확인해 주세요' : '👀 확인해 주세요'),
+          est ? estimatePanel(snap.xsheet) : h('div', null, w.message),
+          est ? h('div', { class: 'small muted', style: { marginTop: '6px' } }, '괜찮으면 [계속] 을 눌러 주세요. 너무 많으면 [중지] 후 워크플로우에서 움직임 방식을 "리미티드" 로 바꾸거나 그림 장수 예산(상한선)을 적어 주세요.') : null,
           h('div', { class: 'actions' },
-            w.key === 'review:xsheet' ? h('button', { class: 'btn', onclick: () => { cur.tab = 'xsheet'; cur.userTab = true; renderTabs(snap); renderBody(snap, true); } }, '📋 타임시트 보기') : null,
+            est ? h('button', { class: 'btn', onclick: () => { cur.tab = 'xsheet'; cur.userTab = true; renderTabs(snap); renderBody(snap, true); } }, '📋 타임시트 보기') : null,
             h('button', { class: 'btn primary', onclick: () => window.api.continueReview(snap.id) }, '계속 ▶'))));
         return;
       }
@@ -218,7 +222,7 @@
     const sigFns = {
       plan: () => JSON.stringify([snap.plan, snap.running]),
       timing: () => JSON.stringify([snap.music && snap.music.analysis && snap.music.analysis.bpm, snap.song, snap.lyricsInput && snap.lyricsInput.raw, snap.timing, snap.running, snap.waiting && snap.waiting.key, snap.steps.music && snap.steps.music.status, snap.xsheet && snap.xsheet.transitions]),
-      xsheet: () => JSON.stringify([snap.xsheet, snap.drawings, snap.running, snap.renderStale]),
+      xsheet: () => JSON.stringify([snap.xsheet, snap.drawings, snap.running, snap.renderStale, snap.inbetweens, snap.render]),
       drawings: () => JSON.stringify([snap.drawings, snap.running]),
       final: () => JSON.stringify([snap.output, snap.renderStale, snap.subsStale, snap.running, snap.steps.render, snap.steps.subtitles]),
       log: () => 'log',
@@ -452,7 +456,10 @@
         h('div', { class: 'row' },
           h('div', { class: 'grow' },
             h('h3', null, `📋 타임시트 · 컷 ${xs.shots.length}개 · 그림 ${xs.totalDrawings}장 (예산 ${xs.budget}장)`),
-            h('p', { class: 'desc' }, `1초 = 24프레임. 보통 컷은 그림 몇 장을 길게 보여 주며 카메라가 움직이고, ⭐ 하이라이트 컷(${hl.length}개)은 그림을 많이 써서 2프레임마다 넘겨요. 총 ${xs.totalFrames}프레임 = ${AM.fmtSec(xs.totalFrames / 24)}`)),
+            h('p', { class: 'desc' }, xs.mode && xs.mode !== 'limited'
+              ? `1초 = 24프레임. ${MODE_KO[xs.mode]}: 🏃 움직이는 컷은 AI 가 1초에 ${xs.keyRate}장(${24 / xs.keyRate}프레임씩) 그리고, 그 사이 그림은 내 PC 가 만들어 부드럽게 이어요. 나머지 컷은 그림 몇 장을 길게 보여 주며 카메라가 움직여요.${xs.layers ? ' 배경 판과 인물 셀을 따로 그려서 겹쳐요.' : ''} 총 ${xs.totalFrames}프레임 = ${AM.fmtSec(xs.totalFrames / 24)}`
+              : `1초 = 24프레임. 보통 컷은 그림 몇 장을 길게 보여 주며 카메라가 움직이고, ⭐ 하이라이트 컷(${hl.length}개)은 그림을 많이 써서 2프레임마다 넘겨요. 총 ${xs.totalFrames}프레임 = ${AM.fmtSec(xs.totalFrames / 24)}`),
+            xs.estimate ? estimatePanel(xs, snap.render && snap.render.inbetween) : null),
           h('button', { class: 'btn small', onclick: () => window.api.openPath(AM.joinPath(snap.dir, 'output')) }, '📂 timesheet.json')),
         xs.notes && xs.notes.length ? h('details', { class: 'adv' }, h('summary', null, `🔧 PC 가 고친 것 ${xs.notes.length}개 (프레임 합계 맞추기 등)`),
           h('ul', { class: 'small muted' }, xs.notes.map((n) => h('li', null, n)))) : null),
@@ -467,12 +474,23 @@
     const camSel = h('select', { class: 'cam-sel', disabled: snap.running, onchange: (e) => { e.target.blur(); AM.safe(() => window.api.setCamera(snap.id, s.shot, e.target.value), '카메라를 바꿨어요. [🎬 다시 렌더링] 을 누르면 반영돼요.'); } },
       (AM.state.info.cameraMoves || Object.keys(AM.CAMERA_LABEL)).map((m) => h('option', { value: m }, AM.CAMERA_LABEL[m] || m)));
     camSel.value = s.camera.move;
-    const thumbs = h('div', { class: 'xs-drawings' }, s.drawings.map((d) => {
+    const xs = snap.xsheet;
+    const bgIt = xs.layers ? drawingOf(snap, s.shot, 'bg') : null;
+    const bgThumb = bgIt ? h('div', { class: 'xs-draw bg', title: (s.bg && s.bg.prompt_en) || '' },
+      h('div', { class: 'thumb', style: { aspectRatio: ar } },
+        bgIt.file && bgIt.status !== 'running' ? h('img', { src: url(snap, bgIt.file, bgIt.updatedAt), loading: 'lazy', onclick: () => bigImage(snap, bgIt.file, bgIt.updatedAt) })
+          : h('div', { class: 'ph' }, bgIt.status === 'running' ? '그리는 중…' : bgIt.status === 'error' ? '⚠ 실패' : '대기'),
+        h('span', { class: 'badge', style: { background: '#475569' } }, '🏞 배경')),
+      h('div', { class: 'acts' },
+        h('button', { class: 'btn small', disabled: snap.running, onclick: () => editPromptDialog(snap, bgIt) }, '✏️'),
+        h('button', { class: 'btn small', disabled: snap.running, onclick: () => replaceDrawing(snap, bgIt) }, '📁'))) : null;
+    const thumbs = h('div', { class: `xs-drawings ${s.drawings.length > 8 ? 'many' : ''}` }, bgThumb, s.drawings.map((d) => {
       const it = drawingOf(snap, s.shot, d.id);
       const v = it && it.updatedAt;
+      const show = it && celView(it);
       return h('div', { class: 'xs-draw', title: d.prompt_en },
-        h('div', { class: 'thumb', style: { aspectRatio: ar, borderColor: dcolor(d.id) } },
-          it && it.file && it.status !== 'running' ? h('img', { src: url(snap, it.file, v), loading: 'lazy', onclick: () => bigImage(snap, it.file, v) })
+        h('div', { class: `thumb ${show && show.checker ? 'checker' : ''}`, style: { aspectRatio: ar, borderColor: dcolor(d.id) } },
+          show && it.status !== 'running' ? h('img', { src: url(snap, show.rel, v), loading: 'lazy', onclick: () => bigImage(snap, show.rel, v, show.checker) })
             : h('div', { class: 'ph' }, it && it.status === 'running' ? '그리는 중…' : it && it.status === 'error' ? '⚠ 실패' : '대기'),
           h('span', { class: 'badge', style: { background: dcolor(d.id) } }, d.id),
           h('span', { class: 'badge r' }, `${used.get(d.id) || 0}f`)),
@@ -480,6 +498,13 @@
           h('button', { class: 'btn small', disabled: snap.running || !it, onclick: () => editPromptDialog(snap, it) }, '✏️'),
           h('button', { class: 'btn small', disabled: snap.running || !it, onclick: () => replaceDrawing(snap, it) }, '📁')));
     }));
+    const rs = ((snap.render && snap.render.shots) || []).find((r) => r.shot === s.shot);
+    const ibs = Object.values(snap.inbetweens || {}).filter((r) => r.shot === s.shot);
+    const ibDone = ibs.filter((r) => r.status === 'done');
+    const ibEngines = [...new Set(ibDone.map((r) => (r.engine === 'rife' ? 'RIFE' : 'ffmpeg')))].join('+');
+    const ibInfo = s.motion ? h('span', { class: 'small muted' }, ibs.length
+      ? `사이 그림 ${ibDone.length}장${ibEngines ? ` (${ibEngines})` : ''}${ibs.length > ibDone.length ? ` · 그대로 넘김 ${ibs.length - ibDone.length}곳` : ''}`
+      : rs ? '사이 그림 없음' : '사이 그림은 렌더링할 때 만들어요') : null;
     // 노출 띠 (X-sheet 를 가로로 펼친 모양)
     const strip = h('div', { class: 'xs-strip' }, s.exposure.map((e) => h('div', {
       class: 'xs-cell', title: `${e.drawing} · ${e.frames}프레임`,
@@ -502,8 +527,12 @@
         h('div', { class: 'grow' },
           h('div', { class: 'row', style: { gap: '8px' } },
             h('b', null, `컷 ${s.shot}`),
-            s.highlight ? h('span', { class: 'chip warn' }, '⭐ 하이라이트 · 2프레임씩') : h('span', { class: 'chip' }, '보통 · 길게 보여 주기'),
-            h('span', { class: 'small muted' }, `${AM.fmtSec(s.start)}~${AM.fmtSec(s.end)} · ${total}프레임 · 그림 ${s.drawings.length}장`),
+            s.motion ? h('span', { class: 'chip motion' }, `🏃 움직임: 1초 ${xs.keyRate || 6}장 + 사이 그림`)
+              : s.highlight && (!xs.mode || xs.mode === 'limited') ? h('span', { class: 'chip warn' }, '⭐ 하이라이트 · 2프레임씩')
+                : h('span', { class: 'chip' }, '멈춤 · 길게 보여 주기 + 카메라'),
+            s.highlight && s.motion ? h('span', { class: 'chip warn' }, '⭐') : null,
+            ibInfo,
+            h('span', { class: 'small muted' }, `${AM.fmtSec(s.start)}~${AM.fmtSec(s.end)} · ${total}프레임 · ${xs.layers ? `배경 1 + 인물 ${s.drawings.length}장` : `그림 ${s.drawings.length}장`}`),
             s.fx.map((f) => h('span', { class: 'chip pri' }, AM.FX_LABEL[f] || f)),
             tr ? h('span', { class: 'small muted' }, `→ 다음 컷: ${tr.type === 'cut' ? '컷' : trIcon(tr.type)}`) : null),
           h('div', { class: 'small muted', style: { marginTop: '3px' } }, `🏞 ${s.scene_en}${s.framing_en ? ` · ${s.framing_en}` : ''}`)),
@@ -514,28 +543,69 @@
       h('details', { class: 'adv', style: { marginTop: '8px' } }, h('summary', null, '📋 노출표 자세히 (프레임 바꾸기)'), table));
   }
 
-  /** 그림만 넘겨 보는 미리보기 (24fps, 카메라 없이) */
+  /** 그림만 넘겨 보는 미리보기 (24fps, 카메라 없이). 배경 판 위에 인물 셀, 사이 그림도 함께 */
   function flipbook(snap, s) {
-    const srcs = new Map(s.drawings.map((d) => { const it = drawingOf(snap, s.shot, d.id); return [d.id, it && it.file ? url(snap, it.file, it.updatedAt) : '']; }));
-    const img = h('img', { class: 'flip-img', style: { aspectRatio: aspectCss(snap.workflow.aspect) } });
+    const srcs = new Map(s.drawings.map((d) => { const it = drawingOf(snap, s.shot, d.id); const v = it && celView(it); return [d.id, v ? url(snap, v.rel, it.updatedAt) : '']; }));
+    const ib = new Map(Object.values(snap.inbetweens || {}).filter((r) => r.shot === s.shot && r.status === 'done').map((r) => [r.pair, url(snap, r.file)]));
+    const seq = expandExposure(s, (a, b) => ib.has(pairKey(a, b)));
+    const bgIt = snap.xsheet.layers ? drawingOf(snap, s.shot, 'bg') : null;
+    const ar = aspectCss(snap.workflow.aspect);
+    const img = h('img', { class: 'flip-cel' });
+    const stage = h('div', { class: 'flip-stage', style: { aspectRatio: ar } },
+      bgIt && bgIt.file ? h('img', { class: 'flip-bg', src: url(snap, bgIt.file, bgIt.updatedAt) }) : null, img);
     const label = h('div', { class: 'small muted mono' });
-    let k = 0;
     let f = 0;
     let timer = null;
     const tick = () => {
-      const e = s.exposure[k];
-      img.src = srcs.get(e.drawing) || '';
-      label.textContent = `그림 ${e.drawing} · ${f + 1}/${s.frames} 프레임`;
-      const wait = (e.frames * 1000) / 24;
-      f += e.frames;
-      k = (k + 1) % s.exposure.length;
-      if (k === 0) f = 0;
-      timer = setTimeout(tick, wait);
+      let n = 1;
+      while (f + n < seq.length && seq[f + n] === seq[f]) n++;
+      const id = seq[f];
+      img.src = id.includes('~') ? ib.get(id) : srcs.get(id) || '';
+      label.textContent = `${id.includes('~') ? `사이 그림 ${id.replace('~', '→')}` : `그림 ${id}`} · ${f + 1}/${s.frames} 프레임`;
+      f = (f + n) % seq.length;
+      timer = setTimeout(tick, (n * 1000) / 24);
     };
     tick();
-    AM.modal(`▶ 컷 ${s.shot} 넘겨보기`, h('div', { class: 'col', style: { alignItems: 'center' } }, img, label,
+    AM.modal(`▶ 컷 ${s.shot} 넘겨보기`, h('div', { class: 'col', style: { alignItems: 'center' } }, stage, label,
       h('div', { class: 'small muted' }, '그림만 순서대로 넘겨요. 카메라 움직임과 필름 느낌은 렌더링한 영상에서 볼 수 있어요.')),
     [{ label: '닫기' }], { width: 'min(900px, 94vw)', onClose: () => clearTimeout(timer) });
+  }
+
+  // 사이 그림 순서 (main 의 xsheet.expandExposure 와 같은 규칙: A 를 앞 절반, A~B 를 뒤 절반)
+  function pairKey(a, b) { return a < b ? `${a}~${b}` : `${b}~${a}`; }
+  function expandExposure(s, has) {
+    const out = [];
+    s.exposure.forEach((e, i) => {
+      const nx = s.exposure[i + 1];
+      if (s.motion && nx && nx.drawing !== e.drawing && e.frames >= 2 && has(e.drawing, nx.drawing)) {
+        const a = Math.ceil(e.frames / 2);
+        for (let k = 0; k < e.frames; k++) out.push(k < a ? e.drawing : pairKey(e.drawing, nx.drawing));
+      } else for (let k = 0; k < e.frames; k++) out.push(e.drawing);
+    });
+    return out;
+  }
+
+  /** 셀은 배경을 뺀 투명 그림을 체크무늬 위에, 못 뺐거나 배경 판이면 원래 그림 */
+  function celView(it) {
+    if (!it || !it.file) return null;
+    if (it.kind !== 'bg' && it.keyed && it.cel) return { rel: it.cel, checker: true };
+    return { rel: it.file, checker: false };
+  }
+
+  /** 그릴 장수·시간 예상 */
+  function estimatePanel(xs, ibRun) {
+    const e = xs.estimate;
+    const time = e.minutes >= 60 ? `약 ${(e.minutes / 60).toFixed(1)}시간` : `약 ${Math.max(1, e.minutes)}분`;
+    return h('div', { class: 'est-panel' },
+      h('div', { class: 'est-big' }, `🎨 그림 약 ${e.images}장`),
+      h('div', { class: 'est-items' },
+        xs.layers ? h('span', { class: 'chip' }, `🏞 배경 ${e.bg}장`) : null,
+        h('span', { class: 'chip' }, `${xs.layers ? '🧍 인물' : '🖼 그림'} ${e.cels}장`),
+        h('span', { class: 'chip warn' }, `⏱ 예상 ${time}`),
+        e.motionShots ? h('span', { class: 'chip motion' }, `🏃 움직이는 컷 ${e.motionShots}개 (${e.motionSeconds}초)`) : null,
+        e.inbetweens ? h('span', { class: 'chip ok' }, `✨ 사이 그림 약 ${e.inbetweens}장 (내 PC, 무료)`) : null,
+        ibRun && ibRun.count != null ? h('span', { class: 'chip pri' }, `만든 사이 그림 ${ibRun.count}장${ibRun.used && ibRun.used.length ? ` · ${ibRun.used.join(', ')}` : ibRun.engine ? ` · ${ibRun.engine === 'rife' ? 'RIFE' : 'ffmpeg'}` : ''}`) : null),
+      h('div', { class: 'small muted' }, `그림 한 장에 ${e.secPerImage}초쯤으로 셈했어요. 구독 사용량 한도에 걸리면 기다렸다가 이어서 해요.`));
   }
 
   // ---------- 그림 탭 ----------
@@ -550,7 +620,7 @@
     return h('div', null,
       refCards.length ? h('div', { class: 'section' },
         h('h3', null, '🔒 기준 그림 (캐릭터 파일)'),
-        h('p', { class: 'desc' }, '그림을 그릴 때마다 이 그림들과 고정 설명·색·규칙을 함께 보내서, 주인공이 늘 똑같이 나오게 해요. 같은 컷의 앞 그림도 함께 보내서 자세가 자연스럽게 이어져요.'),
+        h('p', { class: 'desc' }, '그림을 그릴 때마다 이 그림들과 고정 설명·색·규칙을 함께 보내서, 주인공이 늘 똑같이 나오게 해요. 같은 컷의 앞 그림도 첫 번째로 붙여서 "조금만 고쳐 줘" 라고 부탁하니 자세가 자연스럽게 이어져요. 인물은 단색 배경으로 그린 뒤 내 PC 가 배경을 빼요 (체크무늬 = 투명).'),
         h('div', { class: 'media-grid ref-grid' }, refCards)) : null,
       h('p', { class: 'muted small' }, `${done}/${ds.length}장 완료 · 마음에 안 드는 그림은 [✏️ 다시] 를 누르거나 직접 그린 파일로 [📁 교체] 할 수 있어요. 바꾼 뒤 [🎬 다시 렌더링] 을 누르면 그 컷만 다시 만들어요.`),
       h('div', { class: 'media-grid' }, ds.map((d) => drawingCard(snap, d, ar))));
@@ -558,19 +628,21 @@
 
   function drawingCard(snap, it, ar) {
     const v = it.updatedAt || 0;
+    const show = celView(it);
     let media;
-    if (it.file && it.status !== 'running') media = h('img', { src: url(snap, it.file, v), loading: 'lazy', onclick: () => bigImage(snap, it.file, v) });
+    if (show && it.status !== 'running') media = h('img', { src: url(snap, show.rel, v), loading: 'lazy', onclick: () => bigImage(snap, show.rel, v, show.checker) });
     else if (it.status === 'running') media = h('div', { class: 'col', style: { alignItems: 'center' } }, h('div', { class: 'spinner' }), h('div', { class: 'ph' }, '그리는 중…'));
     else media = h('div', { class: 'ph' }, it.status === 'error' ? '⚠ 실패' : it.status === 'skipped' ? '건너뜀' : '대기 중');
     const shot = snap.xsheet && snap.xsheet.shots.find((x) => x.shot === it.shot);
     const d = shot && shot.drawings.find((x) => x.id === it.id);
     return h('div', { class: 'media-card' },
-      h('div', { class: 'thumb', style: { aspectRatio: ar } }, media,
-        h('span', { class: 'badge', style: { background: dcolor(it.id) } }, `컷 ${it.shot} · ${it.id}`),
-        shot && shot.highlight ? h('span', { class: 'badge r' }, '⭐') : null),
+      h('div', { class: `thumb ${show && show.checker ? 'checker' : ''}`, style: { aspectRatio: ar } }, media,
+        h('span', { class: 'badge', style: { background: it.kind === 'bg' ? '#475569' : dcolor(it.id) } }, it.kind === 'bg' ? `컷 ${it.shot} · 🏞 배경` : `컷 ${it.shot} · ${it.id}`),
+        shot && shot.motion && it.kind !== 'bg' ? h('span', { class: 'badge r' }, '🏃') : shot && shot.highlight ? h('span', { class: 'badge r' }, '⭐') : null),
       h('div', { class: 'body' },
         it.error ? h('div', { class: 'small', style: { color: 'var(--err)' } }, it.error) : null,
-        h('div', { class: 'p', title: it.prompt }, (d && d.prompt_en) || it.prompt),
+        it.kind !== 'bg' && it.keyed === false && snap.xsheet && snap.xsheet.layers ? h('div', { class: 'small', style: { color: 'var(--warn)' } }, '배경을 뺄 수 없어서 전체 그림으로 써요') : null,
+        h('div', { class: 'p', title: it.prompt }, it.kind === 'bg' ? ((shot && shot.bg && shot.bg.prompt_en) || it.prompt) : (d && d.prompt_en) || it.prompt),
         h('div', { class: 'acts' },
           h('button', { class: 'btn small', disabled: snap.running, onclick: () => editPromptDialog(snap, it) }, '✏️ 다시'),
           h('button', { class: 'btn small', disabled: snap.running, onclick: () => replaceDrawing(snap, it) }, '📁 교체'),
@@ -598,8 +670,8 @@
     ], { width: 'min(820px, 94vw)' });
   }
 
-  function bigImage(snap, rel, v) {
-    AM.modal('크게 보기', h('img', { src: url(snap, rel, v), style: { maxWidth: '100%', maxHeight: '72vh', display: 'block', margin: '0 auto', borderRadius: '10px' } }),
+  function bigImage(snap, rel, v, checker) {
+    AM.modal('크게 보기', h('img', { class: checker ? 'checker' : '', src: url(snap, rel, v), style: { maxWidth: '100%', maxHeight: '72vh', display: 'block', margin: '0 auto', borderRadius: '10px' } }),
       [{ label: '📂 위치 열기', onClick: () => { window.api.showItem(abs(snap, rel)); return true; } }, { label: '닫기' }], { width: 'min(980px, 94vw)' });
   }
 

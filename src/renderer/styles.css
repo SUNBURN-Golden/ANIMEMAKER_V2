@@ -262,3 +262,19 @@ input[type=color] { width: 44px; height: 34px; padding: 2px; border: 1px solid v
 .helper-refs { margin-top: 10px; background: #fff; border: 1px dashed #e6c77e; border-radius: 10px; padding: 10px 12px; }
 .helper-ref { width: 170px; display: flex; flex-direction: column; gap: 4px; }
 .helper-ref img { width: 100%; border-radius: 8px; border: 1px solid var(--line); background: #fff; }
+
+/* 움직임 · 배경 판 · 인물 셀 */
+.chip.motion { background: #e6f4ff; color: #0b6bcb; }
+.checker, .thumb.checker, .xs-draw .thumb.checker, .media-card .thumb.checker {
+  background-color: #fff;
+  background-image: linear-gradient(45deg, #dcdce4 25%, transparent 25%), linear-gradient(-45deg, #dcdce4 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #dcdce4 75%), linear-gradient(-45deg, transparent 75%, #dcdce4 75%);
+  background-size: 16px 16px; background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+}
+.xs-drawings.many .xs-draw { width: 104px; }
+.xs-draw.bg .thumb { border-color: #475569; }
+.flip-stage { position: relative; width: min(860px, 88vw); max-height: 62vh; border-radius: 10px; overflow: hidden; background: #000; }
+.flip-stage img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.est-panel { background: #fbfaff; border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; margin-top: 8px; display: flex; flex-direction: column; gap: 8px; }
+.est-big { font-size: 18px; font-weight: 800; }
+.est-items { display: flex; flex-wrap: wrap; gap: 6px; }
