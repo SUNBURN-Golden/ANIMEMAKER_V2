@@ -1,26 +1,30 @@
 'use strict';
-// 체험(demo) 모드로 전체 6단계를 끝까지 돌려 최종 영상이 나오는지 확인
+// 체험(demo) 모드로 V2 전체 7단계를 끝까지 돌려 본다 (무료 · 오프라인)
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { Store } = require('../src/main/store');
-const { ProjectRunner } = require('../src/main/pipeline/runner');
-const { probe } = require('../src/main/media/ffmpeg');
+const { ProjectRunner, STEPS } = require('../src/main/pipeline/runner');
+const { probe, countFrames } = require('../src/main/media/ffmpeg');
 const demo = require('../src/main/ai/demo');
 
 function newStore() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'animemaker-'));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'animemaker2-'));
   const store = new Store({ userDataDir: path.join(root, 'ud'), documentsDir: path.join(root, 'docs'), downloadsDir: path.join(root, 'dl') });
   return { root, store };
 }
 
-test('demo pipeline: example song, lyric-sync pause with tap timing, beat-synced cuts', { timeout: 600000 }, async () => {
+const sum = (a) => a.reduce((x, y) => x + y, 0);
+
+test('demo pipeline: series episode → lyric tap → timesheet → drawings → clean render → subtitles; then subtitles-only and one-shot re-render', { timeout: 900000 }, async () => {
   const { store } = newStore();
-  const wf = { ...store.getWorkflow('builtin-anime-shorts'), minClips: 6, maxClips: 8 };
-  const project = store.createProject('고양이가 우주정거장에서 라면을 끓이는 이야기', wf);
-  project.demoSongSeconds = 48;
+  const { series, character } = await demo.createDemoSeries(store);
+  assert.ok(character.isLocked && character.refs.length === 3);
+  const wf = { ...store.getWorkflow('builtin-cel-wide'), minClips: 5, maxClips: 6, minClipSec: 2, maxClipSec: 10, quality: '480p' };
+  const project = store.createProject('', wf, {}, { seriesId: series.id });
+  project.demoSongSeconds = 30;
   store.saveProject(project);
   const runner = new ProjectRunner({ store, projectId: project.id });
   const logs = [];
@@ -29,41 +33,106 @@ test('demo pipeline: example song, lyric-sync pause with tap timing, beat-synced
   // 가사 맞추기 대기 → 탭으로 맞춘 것처럼 저장하고 계속
   for (let i = 0; i < 600 && !(runner.p.waiting && runner.p.waiting.key === 'review:lyrics'); i++) await new Promise((r) => setTimeout(r, 100));
   assert.strictEqual(runner.p.waiting && runner.p.waiting.key, 'review:lyrics', logs.join('\n'));
-  assert.deepStrictEqual(runner.p.steps.music.status, 'done');
-  assert.deepStrictEqual(runner.p.steps.plan.status, 'done');
+  assert.strictEqual(runner.p.steps.plan.status, 'done');
   const est = runner.p.timing.lyrics;
-  const tapped = est.map((l, i) => ({ text: l.text, part: 1, start: 4 + i * 2.4, end: 4 + i * 2.4 + 2.2 }));
+  const tapped = est.map((l, i) => ({ text: l.text, part: 1, start: 2 + i * 1.4, end: 2 + i * 1.4 + 1.3 }));
   runner.updateLyrics(tapped);
   assert.ok(runner.continueReview());
   await running;
-  const p = runner.snapshot();
+  let p = runner.snapshot();
   assert.strictEqual(p.status, 'done', `status=${p.status} error=${p.error}\n${logs.join('\n')}`);
+  for (const s of STEPS) assert.strictEqual(p.steps[s].status, 'done', s);
+
+  // 기획: 고정 주인공
+  assert.strictEqual(p.plan.characters[0].name, '하루');
+  assert.ok(p.plan.characters[0].fixed);
+  // 타이밍 · 타임시트
   assert.strictEqual(p.timing.lyricsSource, 'tap');
-  assert.ok(p.timing.lyrics[0].section, 'section info kept after tapping');
-  assert.ok(p.timing.segments.length >= 6 && p.timing.segments.length <= 8, `segments ${p.timing.segments.length}`);
-  const beats = p.music.analysis.beats;
-  for (const s of p.timing.segments.slice(1)) assert.ok(beats.some((b) => Math.abs(b - s.start) < 0.01), `cut ${s.start} on beat`);
-  for (const s of p.timing.segments) assert.ok(s.duration >= 1 && s.duration <= 30, `len ${s.duration}`);
-  assert.strictEqual(p.keyframes.filter((k) => k.status === 'done').length, p.timing.segments.length);
-  assert.strictEqual(p.clips.filter((c) => c.status === 'done').length, p.timing.segments.length);
-  const info = await probe(path.join(p.dir, p.output.video));
-  assert.ok(info.hasVideo && info.hasAudio, 'final has video+audio');
-  assert.ok(Math.abs(info.duration - p.music.analysis.duration) < 0.3, `duration ${info.duration} vs ${p.music.analysis.duration}`);
-  const srt = fs.readFileSync(path.join(p.dir, 'output', 'lyrics.srt'), 'utf8');
-  assert.match(srt, /00:00:04,000 -->/);
-  assert.ok(!/\[Verse/.test(srt), 'section tags are not subtitles');
-  console.log(`final ${info.width}x${info.height} ${info.duration}s, clips=${p.timing.segments.length}, bpm=${p.music.analysis.bpm}`);
+  assert.ok(p.timing.segments.length >= 5 && p.timing.segments.length <= 6, `segments ${p.timing.segments.length}`);
+  const xs = p.xsheet;
+  assert.strictEqual(xs.fps, 24);
+  assert.strictEqual(xs.totalFrames, Math.round(p.music.analysis.duration * 24));
+  xs.shots.forEach((s, i) => assert.strictEqual(sum(s.exposure.map((e) => e.frames)), p.timing.frames[i], `shot ${s.shot} exact frames`));
+  assert.ok(xs.totalDrawings <= xs.budget);
+  const hl = xs.shots.filter((s) => s.highlight);
+  const nm = xs.shots.filter((s) => !s.highlight);
+  assert.ok(hl.length >= 1, 'at least one highlight');
+  if (nm.length) assert.ok(Math.min(...hl.map((s) => s.drawings.length)) > Math.max(...nm.map((s) => s.drawings.length)), 'mixed method: highlights get more drawings');
+  // 그림
+  assert.strictEqual(p.drawings.length, xs.totalDrawings);
+  assert.ok(p.drawings.every((d) => d.status === 'done' && fs.existsSync(path.join(p.dir, d.file))));
+  assert.ok(p.drawings.every((d) => d.prompt.includes('long red knitted scarf') || !/하루|Haru/.test(d.prompt)), 'locked design in every character drawing');
+  // 렌더링: 깨끗한 원본 (자막 없음) + 노래
+  const clean = path.join(p.dir, p.output.clean);
+  assert.strictEqual(p.output.clean, 'output/animation_clean.mp4');
+  const ci = await probe(clean);
+  assert.ok(ci.hasVideo && ci.hasAudio, 'clean master has video + song');
+  assert.strictEqual(ci.width, 854);
+  assert.ok(Math.abs((await countFrames(clean)) - xs.totalFrames) <= 1, 'clean frames exact');
+  // 자막 입힌 완성본
+  const final = path.join(p.dir, p.output.video);
+  const fi = await probe(final);
+  assert.ok(fi.hasVideo && fi.hasAudio);
+  assert.ok(Math.abs(fi.duration - p.music.analysis.duration) < 0.15, `final ${fi.duration} vs song ${p.music.analysis.duration}`);
+  assert.match(path.basename(final), /EP1/);
+  assert.match(fs.readFileSync(path.join(p.dir, 'output', 'lyrics.srt'), 'utf8'), /00:00:02,000 -->/);
+  assert.ok(fs.existsSync(path.join(p.dir, 'output', 'timesheet.json')));
+  assert.match(fs.readFileSync(path.join(p.dir, 'output', 'storyboard.md'), 'utf8'), /타임시트/);
+  // 시리즈 기록
+  const ser = store.series.get(series.id);
+  assert.strictEqual(ser.episodes.length, 1);
+  assert.strictEqual(ser.episodes[0].number, 1);
+  assert.ok(ser.episodes[0].summary_ko.length > 10);
+  const next = store.createProject('', wf, {}, { seriesId: series.id });
+  assert.strictEqual(next.series.episode, 2);
+  assert.strictEqual(next.series.previous[0].summary_ko, ser.episodes[0].summary_ko, 'next episode sees the summary');
+
+  // ---- 가사만 고치면 자막 단계만 다시 (렌더링은 하지 않음) ----
+  const cleanMtime = fs.statSync(clean).mtimeMs;
+  const madeAt = p.output.madeAt;
+  runner.updateLyrics(tapped.map((l) => ({ ...l, start: l.start + 1, end: l.end + 1 })));
+  assert.strictEqual(runner.p.steps.subtitles.status, 'pending');
+  assert.strictEqual(runner.p.steps.render.status, 'done');
+  logs.length = 0;
+  await runner.run({ from: 'subtitles' });
+  p = runner.snapshot();
+  assert.strictEqual(p.status, 'done', p.error);
+  assert.ok(logs.some((l) => /자막 입히기 시작/.test(l)));
+  assert.ok(!logs.some((l) => /렌더링 .* 시작|그림 그리기 시작|타임시트 .* 시작/.test(l)), logs.join('\n'));
+  assert.strictEqual(fs.statSync(clean).mtimeMs, cleanMtime, 'clean master not re-rendered');
+  assert.ok(p.output.madeAt > madeAt);
+  assert.match(fs.readFileSync(path.join(p.dir, 'output', 'lyrics.srt'), 'utf8'), /00:00:03,000 -->/);
+  assert.strictEqual(store.series.get(series.id).episodes.length, 1, 'same episode, not logged twice');
+
+  // ---- 그림 한 칸 노출만 바꾸면 그 컷만 다시 렌더링 ----
+  const target = p.xsheet.shots.find((s) => s.exposure.length > 1) || p.xsheet.shots[0];
+  const shotFile = (no) => path.join(p.dir, 'work', 'render', `shot${String(no).padStart(2, '0')}.mp4`);
+  const others = p.xsheet.shots.filter((s) => s.shot !== target.shot).map((s) => [s.shot, fs.statSync(shotFile(s.shot)).mtimeMs]);
+  if (target.exposure.length > 1) {
+    runner.retime(target.shot, 0, target.exposure[0].frames + 2);
+    assert.ok(runner.p.renderStale);
+    assert.strictEqual(sum(runner.p.xsheet.shots.find((s) => s.shot === target.shot).exposure.map((e) => e.frames)), target.frames);
+  } else {
+    runner.setCamera(target.shot, 'pan_right');
+  }
+  await runner.run({ from: 'render' });
+  p = runner.snapshot();
+  assert.strictEqual(p.status, 'done', p.error);
+  assert.strictEqual(p.renderStale, false);
+  for (const [no, m] of others) assert.strictEqual(fs.statSync(shotFile(no)).mtimeMs, m, `shot ${no} reused from cache`);
+  assert.ok(Math.abs((await countFrames(clean)) - p.xsheet.totalFrames) <= 1);
 });
 
-test('uploaded song with .lrc lyrics uses its timing without pausing', { timeout: 600000 }, async () => {
+test('uploaded song with .lrc lyrics uses its timing without pausing (no series: characters from the plan)', { timeout: 600000 }, async () => {
   const { root, store } = newStore();
   const song = path.join(root, 'my suno song.mp3');
-  await demo.demoMusic({ part: 1, seconds: 36, bpm: 100, out: song });
-  const lrc = ['[00:03.00]첫 줄 가사', '[00:08.50]둘째 줄', '[00:15.00]셋째 줄 노래', '[00:24.20]넷째 줄', '[00:30.00]마지막 줄'].join('\n');
-  const wf = { ...store.getWorkflow('builtin-storybook'), minClips: 4, maxClips: 6 };
+  await demo.demoMusic({ part: 1, seconds: 20, bpm: 100, out: song });
+  const lrc = ['[00:03.00]첫 줄 가사', '[00:06.50]둘째 줄', '[00:10.00]셋째 줄 노래', '[00:14.20]넷째 줄', '[00:17.00]마지막 줄'].join('\n');
+  const wf = { ...store.getWorkflow('builtin-storybook'), minClips: 3, maxClips: 4, quality: '480p' };
   const project = store.createProject('', wf, { songPath: song, lyricsText: lrc, lyricsFilename: 'song.lrc' });
   assert.strictEqual(project.song.name, 'my suno song.mp3');
   assert.strictEqual(project.lyricsInput.source, 'lrc');
+  assert.strictEqual(project.series, null);
   const runner = new ProjectRunner({ store, projectId: project.id });
   const logs = [];
   runner.on('log', (l) => logs.push(l.line));
@@ -71,8 +140,10 @@ test('uploaded song with .lrc lyrics uses its timing without pausing', { timeout
   const p = runner.snapshot();
   assert.strictEqual(p.status, 'done', `${p.error}\n${logs.join('\n')}`);
   assert.strictEqual(p.timing.lyricsSource, 'lrc');
-  assert.strictEqual(p.timing.lyrics[2].start, 15);
-  assert.ok(Math.abs(p.music.analysis.duration - 36) < 0.5);
+  assert.strictEqual(p.timing.lyrics[2].start, 10);
+  assert.ok(p.plan.characters.length >= 1);
+  assert.ok(Math.abs(p.music.analysis.duration - 20) < 0.5);
   const info = await probe(path.join(p.dir, p.output.video));
-  assert.ok(Math.abs(info.duration - p.music.analysis.duration) < 0.3);
+  assert.strictEqual(info.width, 480, '1:1 storybook');
+  assert.ok(Math.abs(info.duration - p.music.analysis.duration) < 0.15);
 });

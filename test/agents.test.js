@@ -5,7 +5,7 @@ const assert = require('node:assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { agentText, agentImage, agentVideo, agentStatus } = require('../src/main/ai/agents');
+const { agentText, agentImage, agentStatus } = require('../src/main/ai/agents');
 const { LimitError } = require('../src/main/ai/cli');
 const { ffmpegPath } = require('../src/main/media/ffmpeg');
 
@@ -45,26 +45,27 @@ test('text: every agent returns parsed JSON and never sees API keys', { skip: sk
   }
 });
 
-test('image: codex fallback finds image in CODEX_HOME, grok saves in cwd', { skip: skipWin, timeout: 60000 }, async () => {
+test('image: codex fallback finds image in CODEX_HOME, grok saves in cwd; references are described', { skip: skipWin, timeout: 60000 }, async () => {
   const { dir, settings } = setupFakes();
   const ref = path.join(dir, 'ref.png');
+  const ref2 = path.join(dir, 'prev.png');
   fs.copyFileSync(path.join(ROOT, 'src', 'renderer', 'assets', 'icon.png'), ref);
-  const a = await agentImage('codex', { prompt: 'a cat', aspect: '9:16', refs: [ref], dir: path.join(dir, 'i-codex'), settings });
+  fs.copyFileSync(path.join(ROOT, 'src', 'renderer', 'assets', 'icon.png'), ref2);
+  const notes = ['Haru — turnaround model sheet', 'previous drawing of this shot'];
+  const a = await agentImage('codex', { prompt: 'a cat', aspect: '9:16', refs: [ref, path.join(dir, 'missing.png'), ref2], refNotes: [notes[0], 'x', notes[1]], dir: path.join(dir, 'i-codex'), settings });
   assert.ok(a.includes('generated_images'), a);
   const calls = fs.readFileSync(path.join(dir, 'i-codex', 'fake-codex-calls.log'), 'utf8');
-  assert.match(calls, /--image/, 'reference image passed with --image');
+  assert.strictEqual((calls.match(/--image/g) || []).length, 2, 'each existing reference passed with --image');
   assert.match(calls, /workspace-write/);
-  const b = await agentImage('grok', { prompt: 'a dog', aspect: '9:16', refs: [], dir: path.join(dir, 'i-grok'), settings });
+  const cp = fs.readFileSync(path.join(dir, 'i-codex', 'fake-codex-prompt.txt'), 'utf8');
+  assert.match(cp, /1\) ref1\.png — Haru — turnaround model sheet/);
+  assert.match(cp, /2\) ref2\.png — previous drawing of this shot/);
+  const b = await agentImage('grok', { prompt: 'a dog', aspect: '9:16', refs: [ref], refNotes: [notes[0]], dir: path.join(dir, 'i-grok'), settings });
   assert.strictEqual(path.basename(b), 'output.png');
-});
-
-test('video: grok image_to_video with requested duration', { skip: skipWin, timeout: 60000 }, async () => {
-  const { dir, settings } = setupFakes();
-  const start = path.join(dir, 's.png');
-  fs.copyFileSync(path.join(ROOT, 'src', 'renderer', 'assets', 'icon.png'), start);
-  const v = await agentVideo('grok', { prompt: 'zoom', startImage: start, seconds: 3, aspect: '9:16', dir: path.join(dir, 'v'), settings });
-  assert.strictEqual(path.basename(v), 'output.mp4');
-  await assert.rejects(() => agentVideo('codex', { prompt: 'x', startImage: start, seconds: 3, dir: path.join(dir, 'v2'), settings }), /영상을 만들 수 없습니다/);
+  const gp = fs.readFileSync(path.join(dir, 'i-grok', 'fake-grok-prompt.txt'), 'utf8');
+  assert.match(gp, /Reference image files in the current working directory/);
+  assert.ok(fs.existsSync(path.join(dir, 'i-grok', 'ref1.png')), 'reference copied next to the prompt');
+  await assert.rejects(() => agentImage('claude', { prompt: 'x', dir: path.join(dir, 'i-claude'), settings }), /이미지를 만들 수 없습니다/);
 });
 
 test('usage limit is detected as LimitError', { skip: skipWin, timeout: 60000 }, async () => {

@@ -18,21 +18,12 @@ function readStdin() { try { return fs.readFileSync(0, 'utf8'); } catch (_) { re
 const usesFile = name === 'grok' || name === 'agy';
 const prompt = usesFile ? fs.readFileSync(path.join(process.cwd(), 'PROMPT.md'), 'utf8') : readStdin();
 fs.appendFileSync(path.join(process.cwd(), `fake-${name}-calls.log`), `${JSON.stringify(args)}\n`);
+fs.writeFileSync(path.join(process.cwd(), `fake-${name}-prompt.txt`), prompt);
 
 function img(out, color) {
-  execFileSync(ffmpeg, ['-loglevel', 'error', '-y', '-f', 'lavfi', '-i', `color=c=${color}:s=576x1024:d=1`, '-frames:v', '1', out]);
-}
-function vid(out, sec) {
-  execFileSync(ffmpeg, ['-loglevel', 'error', '-y', '-f', 'lavfi', '-i', `testsrc2=s=720x1280:r=24:d=${sec}`, '-pix_fmt', 'yuv420p', out]);
+  execFileSync(ffmpeg, ['-loglevel', 'error', '-y', '-f', 'lavfi', '-i', `color=c=${color}:s=1024x576:d=1`, '-frames:v', '1', out]);
 }
 
-if (/image_to_video/.test(prompt)) {
-  const sec = Number((/duration: (\d+)/.exec(prompt) || [])[1] || 5);
-  if (!fs.existsSync(path.join(process.cwd(), 'start.png')) && !fs.readdirSync(process.cwd()).some((f) => f.startsWith('start'))) { console.error('no start image'); process.exit(2); }
-  vid(path.join(process.cwd(), 'output.mp4'), sec);
-  console.log(JSON.stringify({ result: 'Saved output.mp4' }));
-  process.exit(0);
-}
 if (/\$imagegen|image_gen|image generation/.test(prompt) && !/Return ONLY/.test(prompt)) {
   if (name === 'codex') {
     // 진짜 codex 처럼 CODEX_HOME/generated_images 에 저장 (작업 폴더로는 복사하지 않음 → 앱의 대체 탐지 확인)
@@ -50,18 +41,40 @@ if (/\$imagegen|image_gen|image generation/.test(prompt) && !/Return ONLY/.test(
 // 글쓰기
 const demo = require(path.join(process.env.FAKE_REPO_ROOT, 'src', 'main', 'ai', 'demo.js'));
 let answer;
-if (/"shots"/.test(prompt)) {
-  const n = Number((/exactly (\d+) shots/.exec(prompt) || [])[1] || 10);
-  const segs = Array.from({ length: n }, (_, i) => ({ index: i + 1, energy: 'mid' }));
-  answer = demo.demoShots(segs, demo.demoPlan('x', {}));
-} else if (/"logline"/.test(prompt)) {
-  const plan = demo.demoPlan('가짜 주제', {});
+if (/"exposure"/.test(prompt)) {
+  // 타임시트: 지시문의 컷 목록을 읽어서, 일부러 프레임 합계가 안 맞는 노출표를 돌려준다 (PC 가 고쳐야 함)
+  const shots = [...prompt.matchAll(/- shot (\d+): .*?= (\d+) frames(.*)/g)].map((m) => ({ shot: Number(m[1]), frames: Number(m[2]), hl: /HIGHLIGHT/.test(m[3]) }));
+  answer = {
+    shots: shots.map((s, i) => (s.hl
+      ? {
+        shot: s.shot, highlight: true, characters: ['하루'], scene_en: 'rooftops in the rain at night',
+        drawings: ['A', 'B', 'C', 'D', 'E', 'F', 'G'].map((id, k) => ({ id, prompt_en: `Haru running, step ${k + 1}` })),
+        exposure: [{ cycle: ['A', 'B', 'C', 'D', 'E', 'F', 'G'], each: 2, repeat: 3 }],
+        camera: { move: 'truck in' }, fx: ['sparkles'], transition_out: { type: 'flash', beats: 1 },
+      }
+      : {
+        shot: s.shot, highlight: false, characters: i % 2 ? [] : ['하루'], scene_en: 'a quiet harbor at dusk', framing_en: 'wide shot',
+        drawings: [{ id: '1', pose: 'Haru looks at the sea' }, { id: '2', pose: 'Haru turns and smiles' }, 'Haru waves'],
+        exposure: ['1:30', ['2', 20], { drawing: '3', seconds: 1.5 }],
+        camera: { move: 'PAN-LEFT', start: { zoom: 1.0, x: 0.9 } }, fx: [], transition_out: { type: 'dissolve', beats: 1 },
+      })),
+  };
+} else if (/"episode_summary_ko"/.test(prompt) || /"logline"/.test(prompt)) {
+  const plan = demo.demoPlan('가짜 주제', {}, null);
   plan.title = `${name} 가 쓴 기획`;
+  // 고정 주인공을 멋대로 다시 디자인하려고 해도 앱이 무시해야 한다
+  plan.guest_characters = [{ name: '하루', appearance_en: 'a tall adult man with blue hair' }, { name: '반디', appearance_en: 'a tiny glowing firefly spirit' }];
   answer = plan;
+} else if (/"locked"/.test(prompt)) {
+  answer = { locked: { ...demo.DEMO_CHARACTER.locked }, palette: demo.DEMO_CHARACTER.palette, rules: demo.DEMO_CHARACTER.rules };
 } else if (/"topics"/.test(prompt)) {
   answer = { topics: ['가짜 주제 1', '가짜 주제 2'] };
 } else {
   answer = { ok: true, hello: '안녕하세요' };
+}
+if (process.env.FAKE_BROKEN_XSHEET && /"exposure"/.test(prompt)) {
+  console.log('Sorry, here is the timesheet: {"shots": [ {"shot": 1, "drawings": [ ... oops');
+  process.exit(0);
 }
 const text = `Here you go:\n\`\`\`json\n${JSON.stringify(answer, null, 1)}\n\`\`\``;
 if (name === 'codex') {

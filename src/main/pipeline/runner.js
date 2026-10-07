@@ -1,36 +1,48 @@
 'use strict';
-// 전체 자동화 진행자 (오케스트레이션)
-//  1 music     노래·가사: 올린 노래(Suno 등) → BPM·박자·마디 분석          (내 PC)
-//  2 plan      기획: 가사와 노래 구조에 맞춘 스토리보드 · 시나리오          (구독 LLM)
-//  3 timing    타이밍: 가사 싱크 · 박자에 맞춘 컷 나누기 · 화면전환 · 샷 설계 (내 PC + 구독 LLM)
-//  4 keyframes 키프레임 이미지                                          (구독 AI)
-//  5 clips     영상 클립 1~30초 (15초 넘으면 마지막 장면에서 이어 만들기)     (구독 AI)
-//  6 edit      이어붙이기 + 하단 가사 자막 + 노래 깔기                     (내 PC, 무료)
+// 전체 자동화 진행자 (오케스트레이션) — 그림을 이어 보여 주는 셀 애니메이션 뮤직비디오
+//  1 music     노래·가사: 올린 노래(Suno 등) → BPM·박자·마디 분석                 (내 PC)
+//  2 plan      기획: 시리즈 약속 + 지난 이야기 + 가사에 맞춘 스토리보드          (구독 LLM)
+//  3 timing    타이밍: 가사 싱크 · 박자에 맞춘 컷 나누기 · 하이라이트 찾기       (내 PC)
+//  4 xsheet    타임시트: 컷마다 그림 목록 · 노출 프레임 · 카메라 · 효과           (구독 LLM 이 짜고 PC 가 검사)
+//  5 drawings  그림: 캐릭터 파일의 기준 그림을 붙여서 한 장씩                      (구독 AI)
+//  6 render    렌더링: 타임시트대로 그림을 넘기고 카메라를 움직여 깨끗한 원본     (내 PC, 무료)
+//  7 subtitles 자막: 깨끗한 원본 위에 가사 자막을 나중에 입히기                   (내 PC, 무료)
 const { EventEmitter } = require('events');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
-const { agentText, agentImage, agentVideo, AGENTS } = require('../ai/agents');
+const { agentText, agentImage, AGENTS } = require('../ai/agents');
 const { LimitError } = require('../ai/cli');
 const demo = require('../ai/demo');
 const { waitForNewDownload, SITES, EXTS } = require('../ai/helper');
 const { NeedsUserError } = require('../ai/webbot/engine');
 const { analyzeSong } = require('../media/audio');
-const { estimateLyricTiming, segmentSong, resolveTransitions, clipNeeds, toSrt, toLrc } = require('../media/timeline');
-const { outputSize, normalizeClip, buildAss, assembleFinal, lastFrame, joinPieces } = require('../media/assemble');
+const { estimateLyricTiming, segmentSong, toSrt, toLrc } = require('../media/timeline');
+const { outputSize, buildAss, assembleAnimation, burnSubtitles, makePaperTexture } = require('../media/assemble');
+const { renderShot } = require('../media/render');
 const { parseLyrics, sectionSummary } = require('../media/lyrics');
-const { probe } = require('../media/ffmpeg');
 const P = require('./prompts');
+const X = require('./xsheet');
 
-const STEPS = ['music', 'plan', 'timing', 'keyframes', 'clips', 'edit'];
+const STEPS = ['music', 'plan', 'timing', 'xsheet', 'drawings', 'render', 'subtitles'];
 const STEP_LABELS = {
   music: '노래·가사 분석 (BPM·박자)',
-  plan: '기획 (스토리보드·시나리오)',
-  timing: '타이밍 설계 (가사 싱크·컷·전환)',
-  keyframes: '키프레임 이미지',
-  clips: '영상 클립',
-  edit: '최종 편집 (자막·노래)',
+  plan: '기획 (이야기·스토리보드)',
+  timing: '타이밍 (가사 싱크·컷 나누기)',
+  xsheet: '타임시트 (그림 장수·프레임·카메라)',
+  drawings: '그림 그리기',
+  render: '렌더링 (깨끗한 원본)',
+  subtitles: '자막 입히기',
 };
+const RENDER_VERSION = 1; // 합성 방식이 바뀌면 올려서 예전 컷 영상을 다시 만들게 한다
+const REF_NOTE = {
+  turnaround: 'character turnaround model sheet (front / side / back): copy this design exactly',
+  expressions: 'character expression sheet: same face, use for expressions',
+  fullbody: 'character full-body reference: same proportions and outfit',
+  other: 'character reference drawing',
+};
+const PREV_NOTE = 'the previous drawing of this same shot: keep the same background, framing, lighting and line style; change only the pose / expression';
 
 function pad2(n) { return String(n).padStart(2, '0'); }
 function sleep(ms, signal) {
@@ -39,7 +51,8 @@ function sleep(ms, signal) {
     if (signal) signal.addEventListener('abort', () => { clearTimeout(t); const e = new Error('사용자가 중지했습니다.'); e.name = 'AbortError'; reject(e); }, { once: true });
   });
 }
-function safeName(s) { return String(s || 'video').replace(/[\\/:*?"<>|\r\n\t]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 50) || 'video'; }
+function safeName(s) { return String(s || 'video').replace(/[\\/:*?"<>|\r\n\t]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 60) || 'video'; }
+function hardStop(e) { return e.name === 'AbortError' || e instanceof LimitError || ['limit', 'auth', 'notInstalled'].includes(e.kind); }
 
 class ProjectRunner extends EventEmitter {
   /**
@@ -63,7 +76,7 @@ class ProjectRunner extends EventEmitter {
       for (const st of Object.values(this.p.steps || {})) {
         if (st.status === 'running' || st.status === 'waiting') { st.status = 'stopped'; st.message = '중지됨 (앱이 꺼졌어요)'; }
       }
-      for (const it of [...(this.p.keyframes || []), ...(this.p.clips || [])]) if (it.status === 'running') it.status = 'pending';
+      for (const it of this.p.drawings || []) if (it.status === 'running') it.status = 'pending';
       this.store.saveProject(this.p);
     }
     this.running = false;
@@ -78,6 +91,7 @@ class ProjectRunner extends EventEmitter {
   exists(rel) { return !!rel && fs.existsSync(this.abs(rel)); }
   get wf() { return this.p.workflow; }
   get settings() { return this.store.getSettings(); }
+  get series() { return this.p.series || null; }
 
   log(msg) {
     const d = new Date();
@@ -129,7 +143,7 @@ class ProjectRunner extends EventEmitter {
         if (this.p.steps[step] && this.p.steps[step].status === 'done') continue;
         this.checkAbort();
         try {
-          this.setStep(step, { status: 'running', message: '진행 중…', startedAt: Date.now() });
+          this.setStep(step, { status: 'running', message: '진행 중…', startedAt: Date.now(), progress: null });
           this.log(`▶ ${STEP_LABELS[step]} 시작`);
           await this[`step_${step}`]();
           this.setStep(step, { status: 'done', message: '완료', finishedAt: Date.now() });
@@ -222,7 +236,8 @@ class ProjectRunner extends EventEmitter {
     this.p.waiting = {
       key: w.key, kind: w.kind, title: w.title, message: w.message,
       site: w.site || null, siteName: site ? site.name : null, siteUrl: site ? site.url : null,
-      copyText: w.copyText || '', image: w.image ? this.rel(w.image) : null, since,
+      copyText: w.copyText || '', image: w.image ? this.rel(w.image) : null,
+      images: (w.images || []).map((x, i) => ({ file: this.rel(x), note: (w.imageNotes || [])[i] || '' })), since,
     };
     this.save();
     this.log(`🙋 도우미: ${w.title} - 사용자 작업을 기다리는 중`);
@@ -267,7 +282,7 @@ class ProjectRunner extends EventEmitter {
       if (this.p.providers.text === 'demo') {
         this.setStep('music', { message: '체험용 예시 노래를 만드는 중…' });
         fs.mkdirSync(path.join(this.dir, 'work'), { recursive: true });
-        file = await demo.demoMusic({ part: 1, seconds: this.p.demoSongSeconds || 90, bpm: 120, out: path.join(this.dir, 'work', 'demo_song.mp3'), signal: this.abort.signal });
+        file = await demo.demoMusic({ part: 1, seconds: this.p.demoSongSeconds || 60, bpm: 120, out: path.join(this.dir, 'work', 'demo_song.mp3'), signal: this.abort.signal });
         if (!this.p.lyricsInput || !this.p.lyricsInput.lines.length) this.p.lyricsInput = parseLyrics(demo.DEMO_LYRICS);
         this.log('🎵 노래 파일이 없어서 체험용 예시 노래(박자만 있는 음악)를 썼습니다.');
       } else {
@@ -311,41 +326,46 @@ class ProjectRunner extends EventEmitter {
     const analysis = this.p.music.analysis;
     let plan;
     if (prov === 'demo') {
-      plan = P.normalizePlan(demo.demoPlan(this.p.topic, this.wf), this.wf);
+      plan = P.normalizePlan(demo.demoPlan(this.p.topic, this.wf, this.series), this.wf, this.series);
     } else {
       const raw = await this.withRetry('기획', () => agentText(prov, {
-        prompt: P.planPrompt(this.p.topic, sectionSummary(this.p.lyricsInput), analysis, this.wf),
+        prompt: P.planPrompt(this.p.topic, sectionSummary(this.p.lyricsInput), analysis, this.wf, this.series),
         dir: path.join(this.dir, 'work', 'plan'),
         settings: this.settings,
         signal: this.abort.signal,
         onLog: (l) => this.log(l),
         accept: P.validPlan,
       }));
-      plan = P.normalizePlan(raw, this.wf);
+      plan = P.normalizePlan(raw, this.wf, this.series);
     }
     this.p.plan = plan;
     this.p.title = plan.title;
+    if (this.series) this.log(`📺 ${this.series.name} EP${this.series.episode}: 주인공 ${this.series.characters.map((c) => c.name).join(', ')} (고정)`);
     this.writeStoryboard();
     this.save();
-    if (this.wf.reviewAfterPlan) await this.review('plan', '기획안(스토리보드·시나리오)을 확인하고 [계속] 을 눌러 주세요.');
+    if (this.wf.reviewAfterPlan) await this.review('plan', '기획안(이야기·스토리보드)을 확인하고 [계속] 을 눌러 주세요.');
   }
 
   writeStoryboard() {
     const plan = this.p.plan;
     if (!plan) return;
     const a = this.p.music && this.p.music.analysis;
+    const s = this.series;
     const lines = [
-      `# ${plan.title}`, '', `> ${plan.logline}`, '', plan.concept, '',
+      `# ${s ? `${s.name} EP${s.episode}. ` : ''}${plan.title}`, '', `> ${plan.logline}`, '', plan.concept, '',
+      plan.episode_summary_ko ? `**이번 이야기 요약**: ${plan.episode_summary_ko}` : '', '',
       a ? `노래: ${(this.p.song && this.p.song.name) || ''} · ${P.fmtTime(a.duration)} · ${a.bpm} BPM · ${plan.music.genre || ''} ${plan.music.mood || ''}` : '', '',
-      '## 등장인물', ...plan.characters.map((c) => `- **${c.name}**: ${c.description_ko} _(${c.appearance_en})_`), '',
-      '## 시나리오', ...plan.story.map((s) => `${s.act}. ${s.sections.length ? `[${s.sections.join(', ')}] ` : ''}${s.summary_ko}`), '',
+      '## 등장인물', ...plan.characters.map((c) => `- **${c.name}**${c.fixed ? ' (고정 주인공 🔒)' : c.role === 'guest' ? ' (이번 화 손님)' : ''}: ${c.description_ko} _(${c.appearance_en})_`), '',
+      '## 시나리오', ...plan.story.map((st) => `${st.act}. ${st.sections.length ? `[${st.sections.join(', ')}] ` : ''}${st.summary_ko}`), '',
       '## 가사', '', sectionSummary(this.p.lyricsInput), '',
     ];
-    if (this.p.shots) {
-      lines.push('## 샷 리스트', '');
-      this.p.timing.segments.forEach((seg, i) => {
-        const s = this.p.shots[i];
-        lines.push(`- 컷 ${seg.index} (${seg.start.toFixed(2)}~${seg.end.toFixed(2)}초, ${seg.duration.toFixed(1)}초, ${seg.beats}박): ${s.action} / ${s.camera} → ${(this.p.timing.transitions[i] || {}).type || '끝'}`);
+    const xs = this.p.xsheet;
+    if (xs) {
+      lines.push('## 타임시트 (컷마다 그림 장수 · 카메라)', '', `총 ${xs.shots.length}컷 · 그림 ${xs.totalDrawings}장 (예산 ${xs.budget}장) · ${xs.totalFrames}프레임 (24fps)`, '');
+      xs.shots.forEach((sh, i) => {
+        const tr = xs.transitions[i];
+        lines.push(`- 컷 ${sh.shot} (${sh.start.toFixed(2)}~${sh.end.toFixed(2)}초, ${sh.frames}프레임)${sh.highlight ? ' ⭐하이라이트' : ''}: 그림 ${sh.drawings.length}장 · 카메라 ${sh.camera.move}${sh.fx.length ? ` · 효과 ${sh.fx.join(', ')}` : ''} → ${tr ? tr.type : '끝'}`);
+        lines.push(`  - 노출: ${sh.exposure.map((e) => `${e.drawing}×${e.frames}`).join(' ')}`);
       });
     }
     fs.mkdirSync(path.join(this.dir, 'output'), { recursive: true });
@@ -354,7 +374,6 @@ class ProjectRunner extends EventEmitter {
 
   // ---------- 3. 타이밍 ----------
   async step_timing() {
-    const plan = this.p.plan;
     const analysis = this.p.music.analysis;
     const parts = this.p.music.partRanges;
     const prevTiming = this.p.timing || {};
@@ -376,35 +395,14 @@ class ProjectRunner extends EventEmitter {
     const segments = segmentSong(analysis, lyrics, parts, {
       minClips: this.wf.minClips, maxClips: this.wf.maxClips, minLen: this.wf.minClipSec, maxLen: this.wf.maxClipSec, pace: this.wf.pace,
     });
-    this.log(`✂ 컷 ${segments.length}개로 나눴습니다: ${segments.map((s) => s.duration.toFixed(1)).join('s, ')}s`);
     this.p.timing.segments = segments;
-    this.save();
-
-    this.setStep('timing', { message: '컷마다 장면과 화면전환을 설계하는 중…' });
-    let shots;
-    const prov = this.p.providers.text;
-    if (prov === 'demo') {
-      shots = P.normalizeShots(demo.demoShots(segments, plan), segments);
-    } else {
-      const raw = await this.withRetry('샷 설계', () => agentText(prov, {
-        prompt: P.shotsPrompt(plan, segments, lyrics, analysis, this.wf),
-        dir: path.join(this.dir, 'work', 'shots'),
-        settings: this.settings,
-        signal: this.abort.signal,
-        onLog: (l) => this.log(l),
-        accept: P.validShots,
-      }));
-      shots = P.normalizeShots(raw, segments);
-    }
-    const transitions = resolveTransitions(segments, shots, analysis.beatPeriod);
-    const needs = clipNeeds(segments, transitions);
-    this.p.timing.transitions = transitions;
-    this.p.timing.needs = needs;
-    this.p.shots = shots;
-    this.buildItems();
+    this.p.timing.frames = X.shotFrames(segments);
+    this.p.timing.highlights = X.markHighlights(segments, lyrics);
+    const hl = this.p.timing.highlights.filter(Boolean).length;
+    this.log(`✂ 컷 ${segments.length}개로 나눴습니다 (하이라이트 ${hl}개): ${segments.map((s) => s.duration.toFixed(1)).join('s, ')}s`);
     this.writeStoryboard();
     this.save();
-    if (this.wf.reviewAfterTiming) await this.review('timing', '타이밍(가사 싱크·컷·전환)을 확인하고 [계속] 을 눌러 주세요. 가사 싱크는 [탭으로 맞추기] 로 다듬을 수 있습니다.');
+    if (this.wf.reviewAfterTiming) await this.review('timing', '타이밍(가사 싱크·컷)을 확인하고 [계속] 을 눌러 주세요. 가사 싱크는 [탭으로 맞추기] 로 다듬을 수 있습니다.');
   }
 
   /** 올린 가사 → 자막 줄 + 시간 (시간이 든 가사 파일이면 그대로, 아니면 자동 추정) */
@@ -421,165 +419,196 @@ class ProjectRunner extends EventEmitter {
     return { lyrics: withSection(est), source: 'auto' };
   }
 
-  /** 샷 → 키프레임/클립 작업 목록. 프롬프트가 같으면 기존 결과물을 유지한다. */
-  buildItems() {
-    const plan = this.p.plan;
+  // ---------- 4. 타임시트 ----------
+  xsheetContext() {
+    const t = this.p.timing;
     const analysis = this.p.music.analysis;
-    const kpc = Math.max(1, Math.min(2, this.wf.keyframesPerClip || 1));
-    const oldK = new Map((this.p.keyframes || []).map((k) => [`${k.clip}:${k.slot}`, k]));
-    const oldC = new Map((this.p.clips || []).map((c) => [c.clip, c]));
-    this.p.keyframes = [];
-    this.p.clips = [];
-    this.p.timing.segments.forEach((seg, i) => {
-      const shot = this.p.shots[i];
-      for (let slot = 1; slot <= kpc; slot++) {
-        const prompt = P.composeKeyframePrompt(shot, plan, this.wf, slot);
-        const old = oldK.get(`${seg.index}:${slot}`);
-        this.p.keyframes.push(old && old.prompt === prompt && this.exists(old.file)
-          ? old : { clip: seg.index, slot, prompt, status: 'pending', file: null });
-      }
-      const vprompt = P.composeVideoPrompt(shot, plan, this.wf, analysis, seg);
-      const need = this.p.timing.needs[i];
-      const old = oldC.get(seg.index);
-      this.p.clips.push(old && old.prompt === vprompt && old.seconds === need.request && this.exists(old.file)
-        ? old : { clip: seg.index, prompt: vprompt, seconds: need.request, need: need.need, status: 'pending', file: null });
-    });
+    const budget = X.resolveBudget(this.wf, analysis.duration, t.segments.length);
+    return {
+      plan: this.p.plan, series: this.series, segments: t.segments, lyrics: t.lyrics, analysis, wf: this.wf,
+      frames: t.frames || X.shotFrames(t.segments), highlights: t.highlights || X.markHighlights(t.segments, t.lyrics),
+      alloc: X.allocateDrawings(t.frames || X.shotFrames(t.segments), t.highlights || [], budget), budget,
+    };
   }
 
-  // ---------- 4. 키프레임 ----------
-  async step_keyframes() {
-    const prov = this.p.providers.image;
-    fs.mkdirSync(path.join(this.dir, 'keyframes'), { recursive: true });
-    // 캐릭터 일관성용 레퍼런스 시트
-    if (this.wf.characterSheet && this.p.plan.characters.length && prov !== 'demo' && !(this.p.refs && this.exists(this.p.refs.sheet))) {
-      this.setStep('keyframes', { message: '캐릭터 기준 이미지(레퍼런스 시트) 만드는 중…' });
+  async step_xsheet() {
+    const prov = this.p.providers.text;
+    const ctx = this.xsheetContext();
+    let raw = null;
+    if (prov === 'demo') {
+      raw = demo.demoXsheet(ctx);
+    } else {
+      this.setStep('xsheet', { message: `컷 ${ctx.segments.length}개의 타임시트를 짜는 중… (그림 예산 ${ctx.budget}장)` });
       try {
-        const file = await this.genImage({ key: 'image:sheet', prompt: P.characterSheetPrompt(this.p.plan, this.wf), refs: [], title: '캐릭터 기준 이미지' }, 'sheet');
-        if (file) {
-          fs.mkdirSync(path.join(this.dir, 'refs'), { recursive: true });
-          const dst = path.join(this.dir, 'refs', `character_sheet${path.extname(file) || '.png'}`);
-          fs.copyFileSync(file, dst);
-          this.p.refs = { sheet: this.rel(dst) };
-          this.save();
-        }
+        raw = await this.withRetry('타임시트', () => agentText(prov, {
+          prompt: X.xsheetPrompt(ctx),
+          dir: path.join(this.dir, 'work', 'xsheet'),
+          settings: this.settings,
+          signal: this.abort.signal,
+          onLog: (l) => this.log(l),
+          accept: X.validXsheet,
+          timeoutMs: 20 * 60 * 1000,
+        }));
       } catch (e) {
-        if (e.name === 'AbortError' || e instanceof LimitError) throw e;
-        this.log(`⚠ 캐릭터 기준 이미지 실패 (계속 진행): ${e.message.split('\n')[0]}`);
+        if (hardStop(e)) throw e;
+        this.log(`⚠ AI 타임시트를 받지 못해서 PC 가 기본 타임시트를 짭니다: ${e.message.split('\n')[0]}`);
       }
     }
-    const refs = this.p.refs && this.exists(this.p.refs.sheet) ? [this.abs(this.p.refs.sheet)] : [];
-    await this.processItems('keyframes', this.p.keyframes, this.settings.concurrency.image || 1, async (k) => {
-      const file = await this.genImage({ key: `image:${k.clip}:${k.slot}`, prompt: k.prompt, refs, title: `키프레임 ${k.clip}${k.slot > 1 ? `-${k.slot}` : ''}` }, `${pad2(k.clip)}_${k.slot}`);
-      if (!file) return null;
-      const dst = path.join(this.dir, 'keyframes', `clip${pad2(k.clip)}_${k.slot}${path.extname(file).toLowerCase() || '.png'}`);
-      fs.copyFileSync(file, dst);
-      return this.rel(dst);
-    });
+    const xs = X.normalizeXsheet(raw, ctx);
+    for (const n of xs.notes.slice(0, 30)) this.log(`🔧 ${n}`);
+    this.p.xsheet = xs;
+    this.buildDrawings();
+    const hl = xs.shots.filter((s) => s.highlight);
+    this.log(`📋 타임시트: 컷 ${xs.shots.length}개 · 그림 ${xs.totalDrawings}장 (예산 ${xs.budget}장) · 하이라이트 ${hl.length}컷에 ${hl.reduce((a, s) => a + s.drawings.length, 0)}장`);
+    fs.mkdirSync(path.join(this.dir, 'output'), { recursive: true });
+    fs.writeFileSync(path.join(this.dir, 'output', 'timesheet.json'), JSON.stringify({ fps: xs.fps, budget: xs.budget, totalFrames: xs.totalFrames, shots: xs.shots, transitions: xs.transitions }, null, 1));
+    this.writeStoryboard();
+    this.save();
+    if (this.wf.reviewAfterXsheet) await this.review('xsheet', `타임시트를 확인해 주세요. 그림 ${xs.totalDrawings}장을 그릴 거예요. 괜찮으면 [계속] 을 눌러 주세요.`);
   }
 
-  async genImage({ key, prompt, refs, title }, tag) {
+  /** 타임시트 → 그림 작업 목록. 프롬프트가 같으면 이미 그린 그림을 그대로 쓴다. */
+  buildDrawings() {
+    const xs = this.p.xsheet;
+    const old = new Map((this.p.drawings || []).map((d) => [d.key, d]));
+    this.p.drawings = [];
+    for (const shot of xs.shots) {
+      for (const d of shot.drawings) {
+        const prompt = P.composeDrawingPrompt({ plan: this.p.plan, series: this.series, shot, drawing: d, wf: this.wf });
+        const key = `${shot.shot}:${d.id}`;
+        const o = old.get(key);
+        this.p.drawings.push(o && (o.prompt === prompt || o.custom) && this.exists(o.file)
+          ? o : { key, shot: shot.shot, id: d.id, prompt, status: 'pending', file: null });
+      }
+    }
+  }
+
+  // ---------- 5. 그림 ----------
+  async step_drawings() {
+    fs.mkdirSync(path.join(this.dir, 'drawings'), { recursive: true });
+    const items = this.p.drawings || [];
+    const todo = items.filter((it) => !(it.status === 'done' && this.exists(it.file)));
+    const total = items.length;
+    const prov = this.p.providers.image || '';
+    const conc = prov === 'helper' || prov.startsWith('bot:') ? 1 : Math.max(1, this.settings.concurrency.image || 1);
+    // 같은 컷의 그림은 순서대로 (앞 그림을 다음 그림의 기준으로 붙이기 위해), 다른 컷끼리는 동시에
+    const groups = [];
+    for (const it of todo) {
+      const g = groups.find((x) => x.shot === it.shot);
+      if (g) g.items.push(it); else groups.push({ shot: it.shot, items: [it] });
+    }
+    const failures = [];
+    const progress = () => {
+      const done = items.filter((x) => x.status === 'done').length;
+      this.setStep('drawings', { message: `${done}/${total}장 완료`, progress: { done, total } });
+    };
+    progress();
+    let gi = 0;
+    const worker = async () => {
+      while (gi < groups.length) {
+        const g = groups[gi++];
+        for (const it of g.items) {
+          this.checkAbort();
+          it.status = 'running';
+          it.error = null;
+          this.save();
+          try {
+            const rel = await this.withRetry(`그림 컷${it.shot}-${it.id}`, () => this.drawOne(it));
+            if (rel) { it.file = rel; it.status = 'done'; it.updatedAt = Date.now(); } else it.status = 'skipped';
+          } catch (e) {
+            if (hardStop(e)) { it.status = 'pending'; this.save(); throw e; }
+            it.status = 'error';
+            it.error = e.message.split('\n')[0];
+            failures.push(it);
+            this.log(`✖ 그림 컷${it.shot}-${it.id}: ${e.message}`);
+          }
+          progress();
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(conc, Math.max(1, groups.length)) }, worker));
+    if (failures.length) {
+      throw new Error(`그림 ${failures.length}장을 그리지 못했습니다. [그림] 탭에서 [다시 그리기] 또는 [파일 넣기] 후 [이어서 하기] 를 눌러 주세요.`);
+    }
+    const skipped = items.filter((x) => x.status === 'skipped').length;
+    if (skipped) this.log(`ℹ 건너뛴 그림 ${skipped}장은 같은 컷의 다른 그림으로 대신 보여 줍니다.`);
+  }
+
+  shotOf(no) { return this.p.xsheet.shots.find((s) => s.shot === no); }
+
+  /** 이 그림에 붙일 기준 그림: 컷에 나오는 고정 캐릭터의 시트 + 같은 컷의 앞 그림 */
+  drawingRefs(shot, id) {
+    const refs = [];
+    const notes = [];
+    const s = this.series;
+    if (s) {
+      const d = shot.drawings.find((x) => x.id === id) || {};
+      const cast = P.charactersInShot(this.p.plan, shot, d).filter((c) => c.fixed);
+      const perChar = cast.length > 1 ? 2 : 3;
+      for (const c of cast) {
+        const sc = s.characters.find((x) => x.name === c.name);
+        if (!sc) continue;
+        const order = ['turnaround', 'expressions', 'fullbody', 'other'];
+        const picked = sc.refs.slice().sort((a, b) => order.indexOf(a.kind) - order.indexOf(b.kind)).slice(0, perChar);
+        for (const r of picked) {
+          if (!this.exists(r.file) || refs.length >= 4) continue;
+          refs.push(this.abs(r.file));
+          notes.push(`${sc.name} — ${REF_NOTE[r.kind] || REF_NOTE.other}`);
+        }
+      }
+    }
+    const idx = shot.drawings.findIndex((x) => x.id === id);
+    for (let k = idx - 1; k >= 0; k--) {
+      const prev = (this.p.drawings || []).find((x) => x.key === `${shot.shot}:${shot.drawings[k].id}`);
+      if (prev && prev.status === 'done' && this.exists(prev.file)) {
+        refs.push(this.abs(prev.file));
+        notes.push(PREV_NOTE);
+        break;
+      }
+    }
+    return { refs, notes };
+  }
+
+  /** 그림 한 장 그리기 → 작업 폴더 안 상대 경로 */
+  async drawOne(it) {
+    const shot = this.shotOf(it.shot);
+    const { refs, notes } = this.drawingRefs(shot, it.id);
+    const index = shot.drawings.findIndex((d) => d.id === it.id);
+    const file = await this.genImage({
+      key: `image:${it.shot}:${it.id}`, prompt: it.prompt, refs, refNotes: notes,
+      title: `그림 컷${it.shot}-${it.id}`,
+      demo: { shot: it.shot, index, count: shot.drawings.length, highlight: shot.highlight },
+    }, `s${pad2(it.shot)}_${it.id}`);
+    if (!file) return null;
+    const dst = path.join(this.dir, 'drawings', `shot${pad2(it.shot)}_${it.id}${path.extname(file).toLowerCase() || '.png'}`);
+    this.removeOld(it.file, dst);
+    fs.copyFileSync(file, dst);
+    return this.rel(dst);
+  }
+
+  async genImage({ key, prompt, refs, refNotes, title, demo: dm }, tag) {
     const prov = this.p.providers.image;
     const work = path.join(this.dir, 'work', 'images', `${tag}_${Date.now()}`);
     fs.mkdirSync(work, { recursive: true });
-    const { w, h } = outputSize(this.wf.aspect, this.wf.quality);
+    const { w, h } = outputSize(this.wf.aspect, '720p');
     if (prov === 'demo') {
-      const [clip, slot] = String(tag).split('_').map((x) => parseInt(x, 10) || 0);
-      return demo.demoImage({ index: clip, slot: slot || 1, w, h, out: path.join(work, 'demo.png'), signal: this.abort.signal });
+      const pal = this.series && this.series.characters[0] ? this.series.characters[0].palette : demo.DEMO_CHARACTER.palette;
+      return demo.demoDrawing({ ...(dm || {}), palette: pal, w: Math.round(w * 1.2), h: Math.round(h * 1.2), out: path.join(work, 'demo.png'), signal: this.abort.signal });
     }
     if (AGENTS[prov]) {
-      return agentImage(prov, { prompt, aspect: this.wf.aspect, refs, dir: work, settings: this.settings, signal: this.abort.signal, onLog: (l) => this.log(l) });
+      return agentImage(prov, { prompt, aspect: this.wf.aspect, refs, refNotes, dir: work, settings: this.settings, signal: this.abort.signal, onLog: (l) => this.log(l) });
     }
     const copy = `${prompt}\n(${this.wf.aspect})`;
     if (prov.startsWith('bot:')) {
       const site = prov.slice(4);
       const got = await this.tryBot(`${site}.image`, { prompt, aspect: this.wf.aspect, reference: refs[0] || '' }, work, title);
       if (got) return got;
-      return this.waitForUser({ key, kind: 'image', title, site, copyText: copy, image: refs[0],
-        message: '자동 클릭이 막혀서 직접 마무리가 필요합니다. 열린 브라우저 창에서 이미지를 만든 뒤 다운로드하면 자동으로 가져옵니다.' });
+      return this.waitForUser({ key, kind: 'image', title, site, copyText: copy, image: refs[0], images: refs, imageNotes: refNotes,
+        message: '자동 클릭이 막혀서 직접 마무리가 필요합니다. 열린 브라우저 창에서 그림을 만든 뒤 다운로드하면 자동으로 가져옵니다.' });
     }
     const site = this.p.helperSites.image || 'gemini';
-    return this.waitForUser({ key, kind: 'image', title, site, copyText: copy, image: refs[0],
-      message: `① [프롬프트 복사] → ② [${(SITES[site] || {}).name || '사이트'} 열기] → ③ (있으면 기준 이미지 첨부) 붙여넣고 생성 → ④ 다운로드. 자동으로 가져옵니다.` });
-  }
-
-  // ---------- 5. 영상 클립 ----------
-  async step_clips() {
-    fs.mkdirSync(path.join(this.dir, 'clips'), { recursive: true });
-    await this.processItems('clips', this.p.clips, this.settings.concurrency.video || 1, async (c) => {
-      const kf = this.p.keyframes.find((k) => k.clip === c.clip && k.slot === 1);
-      if (!kf || !this.exists(kf.file)) throw new Error(`컷 ${c.clip} 의 키프레임이 없습니다.`);
-      const file = await this.genVideo(c, this.abs(kf.file));
-      if (!file) return null;
-      const dst = path.join(this.dir, 'clips', `clip${pad2(c.clip)}${path.extname(file).toLowerCase() || '.mp4'}`);
-      fs.copyFileSync(file, dst);
-      const info = await probe(dst);
-      if (!info.hasVideo) throw new Error('받은 파일에 영상이 없습니다.');
-      c.actualSeconds = Math.round(info.duration * 100) / 100;
-      return this.rel(dst);
-    });
-  }
-
-  /**
-   * 컷 하나의 영상. 영상 AI 는 한 번에 15초까지라서, 더 긴 컷은 조각으로 나눠
-   * '앞 조각의 마지막 장면' 에서 이어 만든 뒤 하나로 잇는다.
-   * 만든 조각은 저장해 두어서 중간에 실패해도 다시 만들지 않는다.
-   */
-  async genVideo(c, startImage) {
-    const maxPiece = Math.max(3, Math.min(15, this.settings.videoMaxSeconds || 15));
-    // 조각끼리 1초 정도 겹쳐서 잇기 때문에 조각 하나는 (최대 길이 - 1)초 만큼만 센다
-    const pieces = c.seconds <= maxPiece ? 1 : Math.ceil(c.seconds / (maxPiece - 1));
-    const pieceLen = pieces === 1 ? c.seconds : Math.min(maxPiece, Math.ceil(c.seconds / pieces) + 1);
-    const work = path.join(this.dir, 'work', 'clips', `clip${pad2(c.clip)}`);
-    fs.mkdirSync(work, { recursive: true });
-    const key = `${c.prompt}|${c.seconds}|${pieces}`;
-    if (c.piecesKey !== key) { c.pieces = []; c.piecesKey = key; }
-    c.piecesTotal = pieces;
-    let img = startImage;
-    for (let k = 1; k <= pieces; k++) {
-      const have = c.pieces[k - 1];
-      if (have && this.exists(have)) {
-        if (k < pieces) img = await lastFrame(this.abs(have), path.join(work, `last_${k}.png`), { signal: this.abort.signal });
-        continue;
-      }
-      const prompt = k === 1 ? c.prompt : P.continuationPrompt(c.prompt, k, pieces);
-      const file = await this.genVideoPiece(c, img, pieceLen, k, pieces, prompt);
-      if (!file) return null;
-      const dst = path.join(work, `piece${k}${path.extname(file).toLowerCase() || '.mp4'}`);
-      if (path.resolve(file) !== path.resolve(dst)) fs.copyFileSync(file, dst);
-      c.pieces[k - 1] = this.rel(dst);
-      this.save();
-      if (pieces > 1) this.log(`  🎞 컷 ${c.clip}: 조각 ${k}/${pieces} 완료`);
-      if (k < pieces) img = await lastFrame(dst, path.join(work, `last_${k}.png`), { signal: this.abort.signal });
-    }
-    if (pieces === 1) return this.abs(c.pieces[0]);
-    return joinPieces(c.pieces.map((r) => this.abs(r)), path.join(work, `joined_${Date.now()}.mp4`), { signal: this.abort.signal });
-  }
-
-  async genVideoPiece(c, startImage, seconds, k, pieces, prompt) {
-    const prov = this.p.providers.video;
-    const work = path.join(this.dir, 'work', 'clips', `clip${pad2(c.clip)}`, `p${k}_${Date.now()}`);
-    fs.mkdirSync(work, { recursive: true });
-    const { w, h } = outputSize(this.wf.aspect, this.wf.quality);
-    const piece = pieces > 1 ? ` · ${k}/${pieces} 조각` : '';
-    const title = `영상 클립 ${c.clip}${piece} (${seconds}초)`;
-    if (prov === 'demo') {
-      return demo.demoVideo({ image: startImage, seconds, w, h, out: path.join(work, 'demo.mp4'), signal: this.abort.signal });
-    }
-    if (AGENTS[prov]) {
-      return agentVideo(prov, { prompt, startImage, seconds, aspect: this.wf.aspect, dir: work, settings: this.settings, signal: this.abort.signal, onLog: (l) => this.log(l) });
-    }
-    const copy = `${prompt}\n(${seconds} seconds, ${this.wf.aspect})`;
-    const cont = k > 1 ? ' 이 조각은 앞 조각의 마지막 장면(이미지)에서 이어지게 만드는 거예요.' : '';
-    if (prov.startsWith('bot:')) {
-      const site = prov.slice(4);
-      const got = await this.tryBot(`${site}.video`, { prompt, image: startImage, seconds, aspect: this.wf.aspect }, work, title);
-      if (got) return got;
-      return this.waitForUser({ key: `video:${c.clip}:${k}`, kind: 'video', title, site, copyText: copy, image: startImage,
-        message: `자동 클릭이 막혀서 직접 마무리가 필요합니다. 열린 브라우저 창에서 영상을 만든 뒤 다운로드하면 자동으로 가져옵니다.${cont}` });
-    }
-    const site = this.p.helperSites.video || 'grok';
-    return this.waitForUser({ key: `video:${c.clip}:${k}`, kind: 'video', title, site, copyText: copy, image: startImage,
-      message: `① [이미지 복사] 후 ${(SITES[site] || {}).name || '사이트'} 에 붙여넣기 → ② [프롬프트 복사] 후 붙여넣기 → ③ 영상 생성(${seconds}초) → ④ 다운로드. 자동으로 가져옵니다.${cont}` });
+    return this.waitForUser({ key, kind: 'image', title, site, copyText: copy, image: refs[0], images: refs, imageNotes: refNotes,
+      message: `① 아래 기준 그림(캐릭터 시트 등)을 [${(SITES[site] || {}).name || '사이트'}] 에 첨부 → ② [프롬프트 복사] 후 붙여넣고 생성 → ③ 다운로드. 자동으로 가져옵니다.` });
   }
 
   /** 자동 클릭 시도. 막히면 null (→ 도우미 모드) */
@@ -613,50 +642,6 @@ class ProjectRunner extends EventEmitter {
     }
   }
 
-  /** 항목들을 (동시에 n개까지) 처리. 실패한 것은 재시도 후 표시만 하고 계속. */
-  async processItems(step, items, concurrency, fn) {
-    const todo = items.filter((it) => !(it.status === 'done' && this.exists(it.file)));
-    const total = items.length;
-    let done = total - todo.length;
-    const failures = [];
-    const helperLike = (this.p.providers[step === 'keyframes' ? 'image' : 'video'] || '');
-    const conc = helperLike === 'helper' || helperLike.startsWith('bot:') ? 1 : Math.max(1, concurrency);
-    this.setStep(step, { message: `${done}/${total} 완료`, progress: { done, total } });
-    let idx = 0;
-    const worker = async () => {
-      while (idx < todo.length) {
-        const it = todo[idx++];
-        this.checkAbort();
-        it.status = 'running';
-        it.error = null;
-        this.save();
-        try {
-          const rel = await this.withRetry(`${STEP_LABELS[step]} ${it.clip}`, () => fn(it));
-          if (rel) { it.file = rel; it.status = 'done'; it.updatedAt = Date.now(); } else { it.status = 'skipped'; }
-        } catch (e) {
-          if (e.name === 'AbortError' || e instanceof LimitError || e.kind === 'limit' || e.kind === 'auth' || e.kind === 'notInstalled') {
-            it.status = 'pending';
-            this.save();
-            throw e;
-          }
-          it.status = 'error';
-          it.error = e.message.split('\n')[0];
-          failures.push(it);
-          this.log(`✖ ${STEP_LABELS[step]} ${it.clip}: ${e.message}`);
-        }
-        done = items.filter((x) => x.status === 'done').length;
-        this.setStep(step, { message: `${done}/${total} 완료`, progress: { done, total } });
-      }
-    };
-    await Promise.all(Array.from({ length: Math.min(conc, Math.max(1, todo.length)) }, worker));
-    if (failures.length && step === 'keyframes') {
-      throw new Error(`키프레임 ${failures.length}개를 만들지 못했습니다. 해당 칸에서 [다시 만들기] 또는 [파일 넣기] 후 [이어서 하기] 를 눌러 주세요.`);
-    }
-    if (failures.length) {
-      this.log(`⚠ 영상 클립 ${failures.length}개는 키프레임을 천천히 확대하는 화면으로 대신합니다. 나중에 다시 만들고 [최종 영상 다시 만들기] 를 누르면 교체됩니다.`);
-    }
-  }
-
   async withRetry(label, fn) {
     let lastErr;
     for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
@@ -665,7 +650,7 @@ class ProjectRunner extends EventEmitter {
         return await fn();
       } catch (e) {
         lastErr = e;
-        if (e.name === 'AbortError' || e instanceof LimitError || ['limit', 'auth', 'notInstalled'].includes(e.kind)) throw e;
+        if (hardStop(e)) throw e;
         if (attempt < this.maxRetries) {
           this.log(`↻ ${label} 재시도 (${attempt + 1}/${this.maxRetries}): ${e.message.split('\n')[0]}`);
           await sleep(3000 * (attempt + 1), this.abort.signal);
@@ -675,113 +660,168 @@ class ProjectRunner extends EventEmitter {
     throw lastErr;
   }
 
-  // ---------- 6. 최종 편집 ----------
-  async step_edit() {
-    const { w, h } = outputSize(this.wf.aspect, this.wf.quality);
-    const t = this.p.timing;
-    const total = this.p.music.analysis.duration;
-    const normDir = path.join(this.dir, 'work', 'norm');
-    fs.mkdirSync(normDir, { recursive: true });
-    const normFiles = [];
-    for (let i = 0; i < t.segments.length; i++) {
-      this.checkAbort();
-      const seg = t.segments[i];
-      const c = this.p.clips[i];
-      const kf = this.p.keyframes.find((k) => k.clip === seg.index && k.slot === 1);
-      const out = path.join(normDir, `clip${pad2(seg.index)}.mp4`);
-      this.setStep('edit', { message: `클립 정리 ${i + 1}/${t.segments.length}`, progress: { done: i, total: t.segments.length + 1 } });
-      const r = await normalizeClip({
-        clip: c && this.exists(c.file) ? this.abs(c.file) : null,
-        keyframe: kf && this.exists(kf.file) ? this.abs(kf.file) : null,
-        need: t.needs[i].need, w, h, out, signal: this.abort.signal,
-      });
-      if (r.fallback) this.log(`ℹ 컷 ${seg.index}: 영상이 없어 키프레임 확대 화면으로 대체`);
-      normFiles.push(out);
+  // ---------- 6. 렌더링 ----------
+  /** 컷에 쓸 그림 파일들. 없는 그림은 같은 컷(없으면 앞 컷)의 그림으로 대신한다. */
+  drawingFilesFor(shotIdx) {
+    const xs = this.p.xsheet;
+    const shot = xs.shots[shotIdx];
+    const good = (no, id) => {
+      const d = (this.p.drawings || []).find((x) => x.key === `${no}:${id}`);
+      return d && d.file && this.exists(d.file) ? this.abs(d.file) : null;
+    };
+    const map = new Map();
+    const inShot = shot.drawings.map((d) => good(shot.shot, d.id)).filter(Boolean);
+    let fallback = inShot[0] || null;
+    for (let k = shotIdx - 1; !fallback && k >= 0; k--) {
+      const s = xs.shots[k];
+      for (const d of s.drawings) { fallback = fallback || good(s.shot, d.id); }
     }
+    for (const d of shot.drawings) {
+      const f = good(shot.shot, d.id);
+      if (!f) this.log(`ℹ 컷 ${shot.shot}: 그림 ${d.id} 가 없어서 다른 그림으로 대신합니다.`);
+      map.set(d.id, f || fallback);
+    }
+    return map;
+  }
+
+  async step_render() {
+    const xs = this.p.xsheet;
+    if (!xs) throw new Error('타임시트가 없습니다. 타임시트 단계부터 다시 해 주세요.');
+    const { w, h } = outputSize(this.wf.aspect, this.wf.quality);
+    const fin = this.wf.finish || {};
+    const work = path.join(this.dir, 'work', 'render');
+    fs.mkdirSync(work, { recursive: true });
+    const prev = (this.p.render && this.p.render.shots) || [];
+    const shots = [];
+    const n = xs.shots.length;
+    for (let i = 0; i < n; i++) {
+      this.checkAbort();
+      const shot = xs.shots[i];
+      const lead = i > 0 ? xs.transitions[i - 1].frames / 2 : 0;
+      const tail = i < xs.transitions.length ? xs.transitions[i].frames / 2 : 0;
+      const files = this.drawingFilesFor(i);
+      const sig = [...files.entries()].map(([id, f]) => {
+        if (!f) return `${id}:-`;
+        const st = fs.statSync(f);
+        return `${id}:${this.rel(f)}:${st.size}:${Math.round(st.mtimeMs)}`;
+      });
+      const key = crypto.createHash('sha1').update(JSON.stringify([RENDER_VERSION, w, h, lead, tail, !!fin.boil, shot.frames, shot.exposure, shot.camera, shot.fx, sig])).digest('hex');
+      const out = path.join(work, `shot${pad2(shot.shot)}.mp4`);
+      const old = prev.find((r) => r.shot === shot.shot);
+      if (old && old.key === key && fs.existsSync(out)) {
+        shots.push({ shot: shot.shot, key, file: this.rel(out), frames: old.frames });
+        continue;
+      }
+      this.setStep('render', { message: `컷 ${i + 1}/${n} 그리는 중 (그림 넘기기·카메라)`, progress: { done: i, total: n + 1 } });
+      const r = await renderShot({
+        shot, files, W: w, H: h, lead, tail, boil: !!fin.boil, seed: 1, out, signal: this.abort.signal,
+        onProgress: (fr) => this.setStep('render', { message: `컷 ${i + 1}/${n} 그리는 중 ${Math.round(fr * 100)}%`, progress: { done: i + fr, total: n + 1 } }),
+      });
+      shots.push({ shot: shot.shot, key, file: this.rel(out), frames: r.frames });
+      this.p.render = { ...(this.p.render || {}), shots: [...shots, ...prev.filter((x) => !shots.some((y) => y.shot === x.shot))] };
+      this.save();
+    }
+    this.p.render = { ...(this.p.render || {}), shots };
     const outDir = path.join(this.dir, 'output');
     fs.mkdirSync(outDir, { recursive: true });
+    const paper = fin.paper ? await makePaperTexture(w, h, path.join(work, 'paper.png'), { signal: this.abort.signal }) : null;
+    const clean = path.join(outDir, 'animation_clean.mp4');
+    this.setStep('render', { message: '컷을 잇고 필름 느낌·노래를 입히는 중…', progress: { done: n, total: n + 1 } });
+    await assembleAnimation({
+      shots: shots.map((s) => ({ file: this.abs(s.file), frames: s.frames })),
+      transitions: xs.transitions,
+      song: this.abs(this.p.music.song),
+      totalFrames: xs.totalFrames, w, h, finish: fin, paperFile: paper, out: clean,
+      signal: this.abort.signal,
+      onProgress: (f) => this.setStep('render', { message: `깨끗한 원본 만드는 중 ${Math.round(f * 100)}%`, progress: { done: n + f, total: n + 1 } }),
+    });
+    this.p.output = { ...(this.p.output || {}), clean: this.rel(clean), cleanAt: Date.now() };
+    this.p.renderStale = false;
+    this.p.subsStale = true;
+    this.log(`🎬 깨끗한 원본 (자막 없음): ${this.rel(clean)} · ${xs.totalFrames}프레임`);
+    this.save();
+  }
+
+  // ---------- 7. 자막 ----------
+  async step_subtitles() {
+    const out = this.p.output || {};
+    if (!this.exists(out.clean)) throw new Error('깨끗한 원본 영상이 없습니다. [렌더링] 부터 다시 해 주세요.');
+    const { w, h } = outputSize(this.wf.aspect, this.wf.quality);
+    const t = this.p.timing;
+    const xs = this.p.xsheet;
+    const total = xs.totalFrames / X.FPS;
+    const outDir = path.join(this.dir, 'output');
     const subs = this.wf.subtitles || {};
-    let subtitlePngs = null;
-    let assFile = null;
-    if (subs.enabled !== false && t.lyrics.length) {
+    const lyrics = (t.lyrics || []).filter((l) => l.start < total);
+    const s = this.series;
+    const name = `${safeName(`${s ? `${s.name} EP${s.episode} ` : ''}${this.p.plan.title}`)}.mp4`;
+    const finalPath = path.join(outDir, name);
+    if (subs.enabled !== false && lyrics.length) {
+      let subtitlePngs = null;
+      let assFile = null;
       if (this.renderSubtitles) {
         try {
-          subtitlePngs = await this.renderSubtitles(t.lyrics, { w, h, style: subs, outDir: path.join(this.dir, 'work', 'subs') });
+          subtitlePngs = await this.renderSubtitles(lyrics, { w, h, style: subs, outDir: path.join(this.dir, 'work', 'subs') });
         } catch (e) {
           this.log(`⚠ 자막 이미지 생성 실패, 기본 자막으로 대체: ${e.message}`);
         }
       }
       if (!subtitlePngs) {
         assFile = path.join(this.dir, 'work', 'lyrics.ass');
-        fs.writeFileSync(assFile, buildAss(t.lyrics, { w, h, style: subs }));
+        fs.mkdirSync(path.dirname(assFile), { recursive: true });
+        fs.writeFileSync(assFile, buildAss(lyrics, { w, h, style: subs }));
       }
+      this.setStep('subtitles', { message: '가사 자막을 입히는 중…' });
+      await burnSubtitles({
+        video: this.abs(out.clean), total, w, h, out: finalPath, subtitlePngs, assFile, signal: this.abort.signal,
+        onProgress: (f) => this.setStep('subtitles', { message: `가사 자막 입히는 중 ${Math.round(f * 100)}%`, progress: { done: Math.round(f * 100), total: 100 } }),
+      });
+    } else {
+      fs.copyFileSync(this.abs(out.clean), finalPath);
+      this.log('ℹ 자막이 꺼져 있거나 가사가 없어서 깨끗한 원본을 그대로 완성본으로 씁니다.');
     }
-    this.setStep('edit', { message: '이어붙이고 자막·노래를 입히는 중…' });
-    const name = `${safeName(this.p.plan.title)}.mp4`;
-    const finalPath = path.join(outDir, name);
-    await assembleFinal({
-      clips: normFiles,
-      lengths: t.needs.map((n) => n.need),
-      transitions: t.transitions,
-      song: this.abs(this.p.music.song),
-      total, w, h, out: finalPath,
-      subtitlePngs, assFile,
-      signal: this.abort.signal,
-      onProgress: (f) => this.setStep('edit', { message: `최종 영상 만드는 중 ${Math.round(f * 100)}%`, progress: { done: Math.round(f * 100), total: 100 } }),
-    });
     fs.writeFileSync(path.join(outDir, 'lyrics.srt'), toSrt(t.lyrics));
     fs.writeFileSync(path.join(outDir, 'lyrics.lrc'), toLrc(t.lyrics, this.p.plan.title));
     this.writeStoryboard();
-    this.p.output = { video: this.rel(finalPath), srt: 'output/lyrics.srt', lrc: 'output/lyrics.lrc', storyboard: 'output/storyboard.md', madeAt: Date.now() };
-    this.p.editStale = false;
+    if (out.video && out.video !== this.rel(finalPath)) this.removeOld(out.video, finalPath);
+    this.p.output = {
+      ...out, video: this.rel(finalPath), srt: 'output/lyrics.srt', lrc: 'output/lyrics.lrc',
+      storyboard: 'output/storyboard.md', timesheet: 'output/timesheet.json', madeAt: Date.now(),
+    };
+    this.p.subsStale = false;
+    if (s) {
+      // 시리즈 기록에 이번 에피소드 요약을 남긴다 (다음 에피소드 기획에 쓰인다)
+      try {
+        this.store.series.recordEpisode(s.id, { number: s.episode, projectId: this.p.id, title: this.p.plan.title, summary_ko: this.p.plan.episode_summary_ko, madeAt: Date.now() });
+        this.log(`📚 ${s.name} 기록에 EP${s.episode} 요약을 남겼습니다.`);
+      } catch (e) {
+        this.log(`⚠ 시리즈 기록 실패: ${e.message}`);
+      }
+    }
     this.save();
   }
 
   // ---------- 개별 수정 ----------
-  /** 한 항목만 다시 만들기 (진행 중이 아닐 때) */
-  async regenerate(kind, clip, { prompt, slot = 1 } = {}) {
-    if (this.running) throw new Error('진행 중에는 다시 만들 수 없습니다. 먼저 중지하세요.');
+  /** 그림 한 장만 다시 그리기 (진행 중이 아닐 때) */
+  async regenerate(kind, shotNo, { id, prompt } = {}) {
+    if (kind !== 'drawing') throw new Error('알 수 없는 항목입니다.');
+    if (this.running) throw new Error('진행 중에는 다시 그릴 수 없습니다. 먼저 중지하세요.');
+    const it = (this.p.drawings || []).find((x) => x.shot === shotNo && x.id === id);
+    if (!it) throw new Error('그림을 찾을 수 없습니다.');
     this.running = true;
     this.abort = new AbortController();
     this.save();
     try {
-      if (kind === 'keyframe') {
-        const k = this.p.keyframes.find((x) => x.clip === clip && x.slot === slot);
-        if (!k) throw new Error('항목을 찾을 수 없습니다.');
-        if (prompt) k.prompt = prompt;
-        k.status = 'running'; this.save();
-        const refs = this.p.refs && this.exists(this.p.refs.sheet) ? [this.abs(this.p.refs.sheet)] : [];
-        const file = await this.genImage({ key: `image:${clip}:${slot}`, prompt: k.prompt, refs, title: `키프레임 ${clip} 다시 만들기` }, `${pad2(clip)}_${slot}`);
-        if (file) {
-          const dst = path.join(this.dir, 'keyframes', `clip${pad2(clip)}_${slot}${path.extname(file).toLowerCase() || '.png'}`);
-          this.removeOld(k.file, dst);
-          fs.copyFileSync(file, dst);
-          k.file = this.rel(dst); k.status = 'done'; k.error = null; k.updatedAt = Date.now();
-        } else { k.status = k.file ? 'done' : 'pending'; }
-      } else if (kind === 'clip') {
-        const c = this.p.clips.find((x) => x.clip === clip);
-        if (!c) throw new Error('항목을 찾을 수 없습니다.');
-        if (prompt) c.prompt = prompt;
-        const kf = this.p.keyframes.find((k) => k.clip === clip && k.slot === 1);
-        if (!kf || !this.exists(kf.file)) throw new Error('키프레임을 먼저 만들어 주세요.');
-        c.pieces = [];
-        c.piecesKey = null;
-        c.status = 'running'; this.save();
-        const file = await this.genVideo(c, this.abs(kf.file));
-        if (file) {
-          const dst = path.join(this.dir, 'clips', `clip${pad2(clip)}${path.extname(file).toLowerCase() || '.mp4'}`);
-          this.removeOld(c.file, dst);
-          fs.copyFileSync(file, dst);
-          c.file = this.rel(dst); c.status = 'done'; c.error = null; c.updatedAt = Date.now();
-        } else { c.status = c.file ? 'done' : 'pending'; }
-      }
-      this.p.editStale = true;
-      this.log(`✔ ${kind === 'clip' ? '영상 클립' : '키프레임'} ${clip} 다시 만들기 완료`);
+      if (prompt && prompt !== it.prompt) { it.prompt = prompt; it.custom = true; }
+      it.status = 'running';
+      this.save();
+      const rel = await this.drawOne(it);
+      if (rel) { Object.assign(it, { file: rel, status: 'done', error: null, updatedAt: Date.now() }); this.p.renderStale = true; } else it.status = it.file ? 'done' : 'pending';
+      this.log(`✔ 그림 컷${shotNo}-${id} 다시 그리기 완료`);
     } catch (e) {
-      const list = kind === 'clip' ? this.p.clips : this.p.keyframes;
-      const it = list.find((x) => x.clip === clip && (kind === 'clip' || x.slot === slot));
-      if (it) { it.status = 'error'; it.error = e.message.split('\n')[0]; }
-      this.log(`✖ 다시 만들기 실패: ${e.message}`);
+      it.status = 'error';
+      it.error = e.message.split('\n')[0];
+      this.log(`✖ 다시 그리기 실패: ${e.message}`);
       throw e;
     } finally {
       this.running = false;
@@ -790,25 +830,44 @@ class ProjectRunner extends EventEmitter {
     }
   }
 
-  /** 사용자가 고른 파일로 항목 교체 */
-  replaceItem(kind, clip, file, slot = 1) {
-    if (kind === 'keyframe') {
-      const k = this.p.keyframes.find((x) => x.clip === clip && x.slot === slot);
-      const dst = path.join(this.dir, 'keyframes', `clip${pad2(clip)}_${slot}${path.extname(file).toLowerCase()}`);
-      fs.mkdirSync(path.dirname(dst), { recursive: true });
-      this.removeOld(k.file, dst);
-      fs.copyFileSync(file, dst);
-      Object.assign(k, { file: this.rel(dst), status: 'done', error: null, updatedAt: Date.now() });
-    } else if (kind === 'clip') {
-      const c = this.p.clips.find((x) => x.clip === clip);
-      const dst = path.join(this.dir, 'clips', `clip${pad2(clip)}${path.extname(file).toLowerCase()}`);
-      fs.mkdirSync(path.dirname(dst), { recursive: true });
-      this.removeOld(c.file, dst);
-      fs.copyFileSync(file, dst);
-      Object.assign(c, { file: this.rel(dst), status: 'done', error: null, updatedAt: Date.now() });
-    }
-    this.p.editStale = true;
+  /** 사용자가 고른 그림 파일로 교체 */
+  replaceItem(kind, shotNo, file, id) {
+    if (kind !== 'drawing') throw new Error('알 수 없는 항목입니다.');
+    const it = (this.p.drawings || []).find((x) => x.shot === shotNo && x.id === id);
+    if (!it) throw new Error('그림을 찾을 수 없습니다.');
+    const dst = path.join(this.dir, 'drawings', `shot${pad2(shotNo)}_${id}${path.extname(file).toLowerCase() || '.png'}`);
+    fs.mkdirSync(path.dirname(dst), { recursive: true });
+    this.removeOld(it.file, dst);
+    fs.copyFileSync(file, dst);
+    Object.assign(it, { file: this.rel(dst), status: 'done', error: null, updatedAt: Date.now() });
+    this.p.renderStale = true;
     this.save();
+  }
+
+  /** 타임시트에서 그림 한 칸의 노출 프레임 바꾸기 (컷 길이는 그대로) */
+  retime(shotNo, index, frames) {
+    if (this.running) throw new Error('진행 중에는 바꿀 수 없습니다.');
+    const xs = this.p.xsheet;
+    const i = xs ? xs.shots.findIndex((s) => s.shot === shotNo) : -1;
+    if (i < 0) throw new Error('컷을 찾을 수 없습니다.');
+    xs.shots[i] = X.retimeExposure(xs.shots[i], index, frames);
+    this.p.renderStale = true;
+    this.writeStoryboard();
+    this.save();
+    return xs.shots[i];
+  }
+
+  /** 컷의 카메라 움직임 바꾸기 */
+  setCamera(shotNo, move) {
+    if (this.running) throw new Error('진행 중에는 바꿀 수 없습니다.');
+    const xs = this.p.xsheet;
+    const shot = xs && xs.shots.find((s) => s.shot === shotNo);
+    if (!shot) throw new Error('컷을 찾을 수 없습니다.');
+    shot.camera = X.normalizeCamera({ move }, shot.fx);
+    this.p.renderStale = true;
+    this.writeStoryboard();
+    this.save();
+    return shot;
   }
 
   removeOld(rel, dst) {
@@ -817,7 +876,7 @@ class ProjectRunner extends EventEmitter {
 
   /** 기획안 수정 */
   updatePlan(plan) {
-    this.p.plan = P.normalizePlan(plan, this.wf);
+    this.p.plan = P.normalizePlan(plan, this.wf, this.series);
     this.writeStoryboard();
     this.save();
   }
@@ -829,22 +888,34 @@ class ProjectRunner extends EventEmitter {
     this.setSong(file);
     this.p.music = null;
     this.p.timing = null;
-    for (const s of ['music', 'timing', 'edit']) if (this.p.steps[s]) this.p.steps[s].status = 'pending';
-    this.p.editStale = true;
+    for (const s of ['music', 'timing', 'xsheet', 'drawings', 'render', 'subtitles']) if (this.p.steps[s]) this.p.steps[s].status = 'pending';
+    this.p.renderStale = true;
     this.save();
   }
 
-  /** 가사 글 바꾸기 (붙여넣기 또는 .txt/.lrc/.srt 파일) → 타이밍부터 다시 */
+  /** 컷이 이미 정해졌는지 (그 뒤의 가사 수정은 자막만 다시 입힌다) */
+  get cutsFixed() { return !!(this.p.steps.timing && this.p.steps.timing.status === 'done' && this.p.timing && this.p.timing.segments); }
+
+  /** 가사 글 바꾸기 (붙여넣기 또는 .txt/.lrc/.srt 파일) */
   updateLyricsText(raw, filename) {
     if (this.running && !(this.p.waiting && this.p.waiting.key === 'review:lyrics')) throw new Error('진행 중에는 바꿀 수 없습니다.');
+    const prev = (this.p.timing && this.p.timing.lyrics) || [];
     this.p.lyricsInput = parseLyrics(raw, filename);
     if (this.p.music && this.p.music.analysis) {
-      // 바뀐 가사로 자막 줄을 바로 다시 계산 (가사 맞추기 대기 중이면 그 화면에 바로 반영)
-      const c = this.computeLyrics();
-      this.p.timing = { ...(this.p.timing || {}), lyrics: c.lyrics, lyricsSource: c.source };
+      const li = this.p.lyricsInput;
+      if (this.cutsFixed && !li.timed && prev.length && li.lines.length === prev.length) {
+        // 줄 수가 같으면 맞춰 둔 시간은 그대로 두고 글자만 바꾼다
+        this.p.timing.lyrics = prev.map((l, i) => ({ ...l, text: li.lines[i].text, section: li.lines[i].section || l.section }));
+      } else {
+        // 바뀐 가사로 자막 줄을 바로 다시 계산 (가사 맞추기 대기 중이면 그 화면에 바로 반영)
+        const c = this.computeLyrics();
+        this.p.timing = { ...(this.p.timing || {}), lyrics: c.lyrics, lyricsSource: c.source };
+      }
     }
-    if (!this.running) for (const s of ['timing', 'edit']) if (this.p.steps[s]) this.p.steps[s].status = 'pending';
-    this.p.editStale = true;
+    if (!this.running) {
+      if (this.cutsFixed) { if (this.p.steps.subtitles) this.p.steps.subtitles.status = 'pending'; } else if (this.p.steps.timing) this.p.steps.timing.status = 'pending';
+    }
+    this.p.subsStale = true;
     this.writeStoryboard();
     this.save();
   }
@@ -859,7 +930,8 @@ class ProjectRunner extends EventEmitter {
       sectionStart: !!(prev[i] && prev[i].text === l.text ? prev[i].sectionStart : l.sectionStart),
     })).filter((l) => l.text && l.end > l.start).sort((a, b) => a.start - b.start);
     this.p.timing.lyricsSource = 'tap';
-    this.p.editStale = true;
+    this.p.subsStale = true;
+    if (!this.running && this.cutsFixed && this.p.steps.subtitles) this.p.steps.subtitles.status = 'pending';
     this.save();
   }
 

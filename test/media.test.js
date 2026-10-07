@@ -6,7 +6,9 @@ const { analyzeSamples, SR } = require('../src/main/media/audio');
 const T = require('../src/main/media/timeline');
 const { extractJson } = require('../src/main/ai/json');
 const P = require('../src/main/pipeline/prompts');
+const X = require('../src/main/pipeline/xsheet');
 const { BUILTIN_WORKFLOWS } = require('../src/main/defaults');
+const { DEMO_CHARACTER } = require('../src/main/ai/demo');
 
 function synth(bpm, dur, offset = 0.37) {
   const n = Math.floor(dur * SR);
@@ -52,10 +54,9 @@ test('segmentation respects beats, clip count and lengths', () => {
   for (const s of segs.slice(1)) assert.ok(a.beats.some((b) => Math.abs(b - s.start) < 1e-3));
   const shots = segs.map(() => ({ transition_out: { type: 'flash', beats: 1 } }));
   const tr = T.resolveTransitions(segs, shots, a.beatPeriod);
-  const needs = T.clipNeeds(segs, tr);
-  const total = needs.reduce((x, n) => x + n.need, 0) - tr.reduce((x, t) => x + t.duration, 0);
-  assert.ok(Math.abs(total - a.duration) < 0.01, 'xfade overlaps keep total length');
-  assert.ok(needs.every((n) => n.request >= 1 && n.request <= 15));
+  assert.strictEqual(tr.length, segs.length - 1);
+  assert.ok(tr.every((t) => t.duration <= 0.6 * 14 && (t.type === 'cut') === (t.duration === 0)));
+  assert.ok(segs.every((s) => typeof s.level === 'number'), 'numeric energy level for highlight ranking');
 });
 
 test('srt/lrc formatting', () => {
@@ -67,25 +68,54 @@ test('srt/lrc formatting', () => {
 test('JSON extraction from messy LLM output', () => {
   const o = extractJson('blah ```json\n{"a": 1, "b": [1,2,],}\n``` end', (x) => x.a === 1);
   assert.deepStrictEqual(o, { a: 1, b: [1, 2] });
-  const env = extractJson(JSON.stringify({ result: 'ok here {"shots": [{"clip": 1, "action": "run"}]} done' }), P.validShots);
-  assert.strictEqual(env.shots[0].action, 'run');
+  const env = extractJson(JSON.stringify({ result: 'ok here {"shots": [{"shot": 1, "drawings": ["Haru runs"], "exposure": ["A:12"]}]} done' }), X.validXsheet);
+  assert.strictEqual(env.shots[0].drawings[0], 'Haru runs');
+  assert.ok(!X.validXsheet({ shots: [{ action: 'run' }] }), 'a V1 shot list is not a timesheet');
   assert.strictEqual(extractJson('no json here'), undefined);
 });
 
-test('prompt composition uses the sentence template and characters', () => {
+test('plan keeps the series protagonist fixed; drawing prompt carries the locked design verbatim', () => {
   const wf = BUILTIN_WORKFLOWS[0];
-  const plan = P.normalizePlan({ title: 't', story: [{ sections: ['Verse 1'], summary_ko: '시작' }], characters: [{ name: '미나', appearance_en: 'girl with red scarf' }], music: { genre: 'pop' } }, wf);
-  assert.deepStrictEqual(plan.story[0].sections, ['Verse 1']);
+  const series = {
+    id: 's1', name: '하루의 여름', episode: 3, bible: { art_en: 'hand-drawn cel animation, watercolor backgrounds', notes_en: 'always summer' },
+    characters: [{ ...DEMO_CHARACTER, id: 'c1', role: 'protagonist', refs: [] }],
+    previous: [{ number: 1, title: '첫 만남', summary_ko: '하루가 바다에서 반디를 만났다.' }, { number: 2, title: '등대', summary_ko: '둘이 등대에 올랐다.' }],
+  };
+  const raw = {
+    title: '세 번째 여름', story: [{ sections: ['Verse 1'], summary_ko: '시작' }],
+    guest_characters: [{ name: '하루', appearance_en: 'an adult man with blue hair' }, { name: '반디', appearance_en: 'a glowing firefly' }],
+    episode_summary_ko: '하루가 섬으로 간다.', music: { genre: 'pop' },
+  };
+  const plan = P.normalizePlan(raw, wf, series);
+  assert.strictEqual(plan.characters[0].name, '하루');
+  assert.ok(plan.characters[0].fixed);
+  assert.match(plan.characters[0].appearance_en, /short brown bob/, 'protagonist look comes from the character file, not the LLM');
+  assert.ok(!plan.characters.some((c) => /blue hair/.test(c.appearance_en)), 'LLM redesign ignored');
+  assert.strictEqual(plan.characters[1].role, 'guest');
+  assert.strictEqual(plan.visual_style, series.bible.art_en);
+  assert.strictEqual(plan.episode_summary_ko, '하루가 섬으로 간다.');
   assert.ok(P.validPlan({ title: 'x', story: [{}] }) && !P.validPlan({ title: 'x' }));
-  const pp = P.planPrompt('', '[Chorus]\n달려가', { duration: 215.4, bpm: 118, downbeats: new Array(105), bars: [{ energy: 0.3 }, { energy: 0.9 }] }, wf);
+
+  const pp = P.planPrompt('', '[Chorus]\n달려가', { duration: 215.4, bpm: 118, downbeats: new Array(105), bars: [{ energy: 0.3 }, { energy: 0.9 }] }, wf, series);
   assert.match(pp, /3:35/);
   assert.match(pp, /\[Chorus\]/);
   assert.match(pp, /You do NOT write lyrics/);
-  const kp = P.composeKeyframePrompt({ characters: ['미나'], subject: 'Mina', action: 'jumps', setting: 'rooftop', camera: 'wide shot', lighting: 'sunset' }, plan, wf);
-  assert.match(kp, /girl with red scarf/);
-  assert.match(kp, /jumps/);
-  assert.match(kp, /No text/);
-  assert.ok(!/\{\w+\}/.test(kp), 'no leftover placeholders');
+  assert.match(pp, /episode 3/);
+  assert.match(pp, /EP2 "등대": 둘이 등대에 올랐다/, 'previous episode summaries for continuity');
+  assert.match(pp, /Never rename them/);
+
+  const shot = { shot: 4, characters: ['하루'], scene_en: 'a harbor at dusk', framing_en: 'wide shot', drawings: [{ id: 'A', prompt_en: 'Haru waves' }] };
+  const dp = P.composeDrawingPrompt({ plan, series, shot, drawing: shot.drawings[0], wf });
+  assert.ok(dp.includes(DEMO_CHARACTER.locked.outfit), 'locked outfit verbatim');
+  assert.ok(dp.includes('scarf red #d7263d'), 'palette with hex');
+  assert.ok(dp.includes('MUST: always wears the long red scarf'), 'rules');
+  assert.ok(dp.includes('NEVER: never change hair color'), 'never rules');
+  assert.match(dp, /look EXACTLY like the attached character reference sheets/);
+  assert.match(dp, /Haru waves/);
+  assert.match(dp, /hand-drawn cel animation, watercolor backgrounds/);
+  assert.match(dp, /No text/);
+  const scenery = P.composeDrawingPrompt({ plan, series, shot: { ...shot, characters: [] }, drawing: { id: 'A', prompt_en: 'empty beach at dawn' }, wf });
+  assert.ok(!scenery.includes('LOCKED DESIGN'), 'no character block for a scenery drawing');
 });
 
 test('lyrics: Suno tags, LRC and SRT', () => {

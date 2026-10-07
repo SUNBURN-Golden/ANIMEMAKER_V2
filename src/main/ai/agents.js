@@ -1,8 +1,8 @@
 'use strict';
 // 구독형 AI 연결 (공식 CLI 만 사용).
-//  - ChatGPT 구독  → Codex CLI (codex)      : 글쓰기 + 이미지($imagegen, gpt-image)
-//  - SuperGrok     → Grok Build CLI (grok)  : 글쓰기 + 이미지(image_gen) + 이미지→영상(image_to_video)
-//  - Google AI Pro → Antigravity CLI (agy)  : 글쓰기 (+ 이미지: 실험적)
+//  - ChatGPT 구독  → Codex CLI (codex)      : 글쓰기 + 그림($imagegen, gpt-image, 기준 그림은 --image 로 첨부)
+//  - SuperGrok     → Grok Build CLI (grok)  : 글쓰기 + 그림(image_gen, 기준 그림은 작업 폴더에 복사)
+//  - Google AI Pro → Antigravity CLI (agy)  : 글쓰기 (+ 그림: 실험적)
 //  - Claude Pro/Max→ Claude Code (claude)   : 글쓰기
 const fs = require('fs');
 const os = require('os');
@@ -13,7 +13,6 @@ const { extractJson, collectJsonLinesText } = require('./json');
 const FILE_INSTRUCTION = 'Read the file PROMPT.md in the current working directory and follow its instructions exactly. Do not ask questions.';
 
 const IMAGE_EXT = ['.png', '.jpg', '.jpeg', '.webp'];
-const VIDEO_EXT = ['.mp4', '.mov', '.webm', '.m4v'];
 
 const AGENTS = {
   codex: {
@@ -21,7 +20,7 @@ const AGENTS = {
     name: 'ChatGPT (Codex CLI)',
     subscription: 'ChatGPT Plus / Pro / Business',
     bins: ['codex'],
-    caps: { text: true, image: true, video: false },
+    caps: { text: true, image: true },
     install: { win: 'npm install -g @openai/codex', other: 'npm install -g @openai/codex', note: 'Node.js(https://nodejs.org) 가 먼저 설치되어 있어야 합니다.' },
     login: 'codex login',
     loginNote: '창이 뜨면 "Sign in with ChatGPT" 를 선택하세요. (API key 로그인은 종량제 과금이라 쓰지 마세요)',
@@ -37,13 +36,12 @@ const AGENTS = {
     name: 'Grok (SuperGrok, grok CLI)',
     subscription: 'SuperGrok / X Premium+',
     bins: ['grok'],
-    caps: { text: true, image: true, video: true },
+    caps: { text: true, image: true },
     install: { win: 'irm https://x.ai/cli/install.ps1 | iex', other: 'curl -fsSL https://x.ai/cli/install.sh | bash' },
     login: 'grok',
     loginNote: '처음 실행하면 브라우저가 열립니다. SuperGrok 계정으로 로그인한 뒤 창을 닫으세요.',
     textArgs: (c) => ['-p', FILE_INSTRUCTION, '--always-approve', '--output-format', 'json', ...(c.model ? ['-m', c.model] : []), ...c.extra],
     imageArgs: (c) => ['-p', FILE_INSTRUCTION, '--always-approve', '--output-format', 'json', ...c.extra],
-    videoArgs: (c) => ['-p', FILE_INSTRUCTION, '--always-approve', '--output-format', 'json', ...c.extra],
     promptVia: 'file',
     mediaDirs: () => [path.join(os.homedir(), '.grok', 'sessions')],
   },
@@ -52,7 +50,7 @@ const AGENTS = {
     name: 'Gemini (Google AI Pro/Ultra, Antigravity CLI)',
     subscription: 'Google AI Pro / Ultra',
     bins: ['agy', 'antigravity'],
-    caps: { text: true, image: 'experimental', video: false },
+    caps: { text: true, image: 'experimental' },
     install: { win: 'irm https://antigravity.google/cli/install.ps1 | iex', other: 'curl -fsSL https://antigravity.google/cli/install.sh | bash' },
     login: 'agy',
     loginNote: '처음 실행하면 Google 로그인이 뜹니다. 구독 중인 Google 계정으로 로그인한 뒤 창을 닫으세요. (Gemini CLI 개인 로그인은 2026년 6월 종료되어 Antigravity CLI 를 씁니다)',
@@ -66,7 +64,7 @@ const AGENTS = {
     name: 'Claude (Pro/Max, Claude Code)',
     subscription: 'Claude Pro / Max',
     bins: ['claude'],
-    caps: { text: true, image: false, video: false },
+    caps: { text: true, image: false },
     install: { win: 'irm https://claude.ai/install.ps1 | iex', other: 'curl -fsSL https://claude.ai/install.sh | bash' },
     login: 'claude',
     loginNote: '처음 실행하면 로그인 방법을 묻습니다. "Claude 구독 계정" 으로 로그인하세요.',
@@ -185,7 +183,7 @@ async function exec(id, kind, ctx) {
 }
 
 const COMMON_RULES = [
-  'You are running non-interactively inside the AnimeMaker app. Never ask questions; make reasonable creative decisions yourself.',
+  'You are running non-interactively inside the AnimeMaker V2 app. Never ask questions; make reasonable creative decisions yourself.',
   'Do not use any paid API key, SDK script or external web service. Use only your own built-in capabilities.',
 ];
 
@@ -231,15 +229,34 @@ function pickMedia(dir, before, beforeExt, extDirs, exts, r, since) {
   return ext[0] || null;
 }
 
+/**
+ * 기준 그림 설명 줄: 몇 번째 그림이 무엇인지 알려 준다 (캐릭터 시트 = 똑같이, 앞 그림 = 배경·구도 이어서).
+ * @param {string[]} names 작업 폴더 안 파일 이름 (codex 는 --image 첨부 순서와 같다)
+ * @param {string[]} notes 그림마다 설명
+ */
+function refLines(names, notes, attached) {
+  if (!names.length) return [];
+  const where = attached ? 'Attached reference images, in order' : `Reference image files in the current working directory (use them as image references / image edit inputs)`;
+  return [
+    `${where}:`,
+    ...names.map((n, i) => `${i + 1}) ${n}${notes[i] ? ` — ${notes[i]}` : ''}`),
+    'Treat character model sheets as a strict design reference: copy the character design exactly. Do not copy their white background or their layout.',
+  ];
+}
+
 /** 이미지 1장 생성 → dir 안의 파일 경로 */
-async function agentImage(id, { prompt, aspect, refs = [], dir, settings, signal, onLog, timeoutMs }) {
+async function agentImage(id, { prompt, aspect, refs = [], refNotes = [], dir, settings, signal, onLog, timeoutMs }) {
   const a = AGENTS[id];
   if (!a.caps.image) throw new Error(`${a.name} 는 이미지를 만들 수 없습니다.`);
   ensureDir(dir);
-  const localRefs = refs.filter((r) => r && fs.existsSync(r)).map((r, i) => {
-    const dst = path.join(dir, `ref${i + 1}${path.extname(r) || '.png'}`);
+  const notes = [];
+  const localRefs = [];
+  refs.forEach((r, i) => {
+    if (!r || !fs.existsSync(r)) return;
+    const dst = path.join(dir, `ref${localRefs.length + 1}${path.extname(r) || '.png'}`);
     fs.copyFileSync(r, dst);
-    return dst;
+    localRefs.push(dst);
+    notes.push(refNotes[i] || '');
   });
   const refNames = localRefs.map((r) => path.basename(r));
   let text;
@@ -249,7 +266,7 @@ async function agentImage(id, { prompt, aspect, refs = [], dir, settings, signal
       ...COMMON_RULES,
       'Generate exactly ONE image with your built-in image generation tool (image_gen). Do not write code or call scripts.',
       `Size: ${aspectToSize(aspect)} (${aspectWords(aspect)}).`,
-      refNames.length ? `The attached image(s) are references: keep the same character design, outfit, colors and art style. Do not copy their composition.` : '',
+      ...refLines(refNames, notes, true),
       'Image prompt:',
       prompt,
       '',
@@ -259,8 +276,8 @@ async function agentImage(id, { prompt, aspect, refs = [], dir, settings, signal
     text = [
       ...COMMON_RULES,
       'Use your built-in image generation tool (image_gen) to generate exactly ONE image.',
-      `aspect_ratio: ${aspect || '9:16'}`,
-      refNames.length ? `Reference image file(s) in the current working directory: ${refNames.join(', ')}. Use them as the input/reference image (image edit / reference) so the character design, outfit, colors and art style stay the same.` : '',
+      `aspect_ratio: ${aspect || '16:9'}`,
+      ...refLines(refNames, notes, false),
       'Image prompt:',
       prompt,
       '',
@@ -279,38 +296,6 @@ async function agentImage(id, { prompt, aspect, refs = [], dir, settings, signal
   const kind = classifyFailure(`${r.stdout}\n${r.stderr}`.slice(-3000));
   if (kind === 'limit') throw new LimitError(`${a.name}: 이미지 생성 한도에 도달한 것 같습니다.`);
   throw new Error(`${a.name} 가 이미지를 저장하지 않았습니다. 작업 폴더 로그를 확인하세요: ${dir}`);
-}
-
-/** 이미지 → 영상 클립 생성 */
-async function agentVideo(id, { prompt, startImage, seconds, aspect, dir, settings, signal, onLog, timeoutMs }) {
-  const a = AGENTS[id];
-  if (!a.caps.video) throw new Error(`${a.name} 는 영상을 만들 수 없습니다.`);
-  ensureDir(dir);
-  const start = path.join(dir, `start${path.extname(startImage) || '.png'}`);
-  fs.copyFileSync(startImage, start);
-  const text = [
-    ...COMMON_RULES,
-    `Use your built-in image_to_video tool to animate the existing image file ${path.basename(start)} in the current working directory (use it as the first frame).`,
-    `duration: ${seconds} seconds`,
-    `aspect_ratio: ${aspect || '9:16'}`,
-    'resolution: 720p',
-    'Motion prompt:',
-    prompt,
-    '',
-    'Save the resulting video into the current working directory as output.mp4. Then list the directory to confirm the file exists. Do nothing else.',
-  ].join('\n');
-  const exts = VIDEO_EXT;
-  const extDirs = a.mediaDirs();
-  const before = snapshotMedia([dir], exts, 1);
-  const beforeExt = snapshotMedia(extDirs, exts);
-  const since = Date.now();
-  const r = await exec(id, 'video', { prompt: text, dir, settings, signal, onLog, timeoutMs: timeoutMs || 20 * 60 * 1000 });
-  const picked = pickMedia(dir, before, beforeExt, extDirs, exts, r, since);
-  if (picked) return picked;
-  if (r.code !== 0) throw failureFrom(r, a.name);
-  const kind = classifyFailure(`${r.stdout}\n${r.stderr}`.slice(-3000));
-  if (kind === 'limit') throw new LimitError(`${a.name}: 영상 생성 한도에 도달한 것 같습니다.`);
-  throw new Error(`${a.name} 가 영상을 저장하지 않았습니다. 작업 폴더 로그를 확인하세요: ${dir}`);
 }
 
 function sigOf(p) {
@@ -351,6 +336,6 @@ async function agentTest(id, settings, dir) {
 }
 
 module.exports = {
-  AGENTS, agentText, agentImage, agentVideo, agentStatus, agentTest, findBin,
-  snapshotMedia, newMedia, pathsInText, aspectToSize, IMAGE_EXT, VIDEO_EXT,
+  AGENTS, agentText, agentImage, agentStatus, agentTest, findBin,
+  snapshotMedia, newMedia, pathsInText, aspectToSize, IMAGE_EXT,
 };
