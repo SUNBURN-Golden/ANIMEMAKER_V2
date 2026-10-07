@@ -2,6 +2,7 @@
 // ffmpeg 실행 도우미. 앱에 같이 들어있는 ffmpeg-static 을 우선 사용하고,
 // 없으면 시스템 ffmpeg 를 사용한다.
 const { spawn } = require('child_process');
+const { once } = require('events');
 const fs = require('fs');
 
 let cachedPath = null;
@@ -99,6 +100,57 @@ async function probe(file) {
   return info;
 }
 
+/**
+ * 앱이 직접 그린 프레임(raw RGB)을 ffmpeg 로 흘려보내 영상으로 저장한다.
+ * write() 는 ffmpeg 가 받을 준비가 될 때까지 기다린다 (메모리가 넘치지 않게).
+ * @param {string[]} args 입력은 'pipe:0'
+ * @param {{signal?: AbortSignal}} [opts]
+ */
+function ffmpegWriter(args, opts = {}) {
+  const child = spawn(ffmpegPath(), ['-hide_banner', '-nostdin', '-loglevel', 'error', ...args], {
+    windowsHide: true,
+    stdio: ['pipe', 'ignore', 'pipe'],
+  });
+  let err = '';
+  let closed = false;
+  child.stderr.on('data', (d) => { err += d.toString(); if (err.length > 100000) err = err.slice(-50000); });
+  const onAbort = () => { try { child.kill('SIGKILL'); } catch (_) { /* noop */ } };
+  if (opts.signal) {
+    if (opts.signal.aborted) onAbort();
+    else opts.signal.addEventListener('abort', onAbort, { once: true });
+  }
+  const done = new Promise((resolve, reject) => {
+    child.on('error', (e) => { closed = true; reject(new Error(`ffmpeg 를 실행할 수 없습니다: ${e.message}`)); });
+    child.on('close', (code) => {
+      closed = true;
+      if (opts.signal) opts.signal.removeEventListener('abort', onAbort);
+      if (opts.signal && opts.signal.aborted) return reject(abortError());
+      if (code === 0) return resolve();
+      return reject(new Error(`ffmpeg 오류 (코드 ${code}):\n${err.split('\n').filter((l) => l.trim()).slice(-12).join('\n')}`));
+    });
+  });
+  done.catch(() => {});
+  child.stdin.on('error', () => { /* 끊김은 done 에서 알린다 */ });
+  return {
+    async write(buf) {
+      if (opts.signal && opts.signal.aborted) throw abortError();
+      if (closed) { await done; throw new Error('ffmpeg 가 먼저 끝났습니다.'); }
+      if (!child.stdin.write(buf)) await Promise.race([once(child.stdin, 'drain'), done]);
+    },
+    async end() {
+      child.stdin.end();
+      await done;
+    },
+  };
+}
+
+/** 영상의 실제 프레임 수 (풀어서 셈) */
+async function countFrames(file) {
+  const { stderr } = await runFfmpeg(['-i', file, '-map', '0:v:0', '-f', 'null', '-']);
+  const all = [...stderr.matchAll(/frame=\s*(\d+)/g)];
+  return all.length ? Number(all[all.length - 1][1]) : 0;
+}
+
 /** 오디오를 mono float32 PCM 으로 디코딩 */
 async function decodeAudioMono(file, sampleRate = 22050, opts = {}) {
   const { stdout } = await runFfmpeg(
@@ -115,4 +167,4 @@ function concatEscape(p) {
   return p.replace(/\\/g, '/').replace(/'/g, "'\\''");
 }
 
-module.exports = { ffmpegPath, runFfmpeg, probe, decodeAudioMono, concatEscape, abortError };
+module.exports = { ffmpegPath, runFfmpeg, ffmpegWriter, countFrames, probe, decodeAudioMono, concatEscape, abortError };
