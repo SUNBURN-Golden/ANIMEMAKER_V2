@@ -1,7 +1,7 @@
 'use strict';
 // 구독형 AI 의 공식 CLI(코덱스, 그록, 안티그래비티, 클로드 코드)를 실행하는 공통 모듈.
 // 중요: 종량제 API 키 환경변수는 모두 지운 상태로 실행해서 '구독 한도 안에서만' 쓰도록 한다.
-const { spawn } = require('child_process');
+const { spawn, execFileSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -15,8 +15,64 @@ const PAID_API_ENV = [
   'ELEVENLABS_API_KEY',
 ];
 
+/** 'a;b' 꼴 PATH 여러 개를 순서대로 합치고 겹치는 것은 뺀다 (윈도우는 대소문자 무시) */
+function mergePaths(lists, sep = path.delimiter, caseless = process.platform === 'win32') {
+  const seen = new Set();
+  const out = [];
+  for (const list of lists) {
+    for (const raw of String(list || '').split(sep)) {
+      const d = raw.trim().replace(/^"(.*)"$/, '$1');
+      if (!d) continue;
+      const k = caseless ? d.toLowerCase().replace(/[\\/]+$/, '') : d;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      out.push(d);
+    }
+  }
+  return out.join(sep);
+}
+
+/** %LOCALAPPDATA% 같은 윈도우 변수 풀기 */
+function expandWinVars(s, env = process.env) {
+  return String(s || '').replace(/%([^%;]+)%/g, (all, name) => {
+    const k = Object.keys(env).find((x) => x.toUpperCase() === name.toUpperCase());
+    return k ? env[k] : all;
+  });
+}
+
+let freshPathCache = { at: 0, value: null };
+
+/**
+ * 윈도우: 지금 레지스트리에 저장된 PATH (시스템 + 사용자) 를 읽는다.
+ * 프로그램은 켜질 때의 PATH 를 계속 쓰기 때문에, 켜 둔 채 Node.js·Codex 등을 설치하면 찾지 못한다.
+ * 그래서 CLI 를 찾거나 실행할 때마다 (30초 캐시) 최신 PATH 를 합쳐 쓴다.
+ */
+function freshWindowsPath(env = process.env, { force = false } = {}) {
+  if (process.platform !== 'win32') return null;
+  if (!force && freshPathCache.value && Date.now() - freshPathCache.at < 30000) return freshPathCache.value;
+  let machine = '';
+  let user = '';
+  try {
+    const out = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+      "[Console]::OutputEncoding=[Text.Encoding]::UTF8; [Environment]::GetEnvironmentVariable('Path','Machine'); '<<<AM>>>'; [Environment]::GetEnvironmentVariable('Path','User')"],
+    { encoding: 'utf8', windowsHide: true, timeout: 8000 });
+    [machine, user] = out.split('<<<AM>>>').map((x) => x.trim());
+  } catch (_) { /* 못 읽으면 지금 PATH 만 쓴다 */ }
+  const value = mergePaths([expandWinVars(machine, env), expandWinVars(user, env), env.PATH || env.Path || ''], ';', true);
+  freshPathCache = { at: Date.now(), value };
+  return value;
+}
+
+/** env 의 PATH 를 바꾼다 (윈도우는 Path/PATH 이름이 섞여 있을 수 있어 하나로 정리) */
+function withPath(env, value) {
+  if (!value) return env;
+  for (const k of Object.keys(env)) if (k.toUpperCase() === 'PATH') delete env[k];
+  env[process.platform === 'win32' ? 'Path' : 'PATH'] = value;
+  return env;
+}
+
 function subscriptionOnlyEnv(extra = {}) {
-  const env = { ...process.env };
+  const env = withPath({ ...process.env }, freshWindowsPath());
   for (const k of Object.keys(env)) {
     if (PAID_API_ENV.includes(k.toUpperCase())) delete env[k];
   }
@@ -53,9 +109,12 @@ function resolveBinary(names, customPath) {
   const isWin = process.platform === 'win32';
   const exts = isWin ? ['.exe', '.cmd', '.bat', ''] : [''];
   const home = os.homedir();
-  const dirs = (process.env.PATH || process.env.Path || '').split(path.delimiter).filter(Boolean);
+  const localAppData = process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local');
+  const dirs = (freshWindowsPath() || process.env.PATH || process.env.Path || '').split(path.delimiter).filter(Boolean);
   const extra = isWin
     ? [
+      ...(process.env.CODEX_INSTALL_DIR ? [process.env.CODEX_INSTALL_DIR] : []),
+      path.join(localAppData, 'Programs', 'OpenAI', 'Codex', 'bin'), // Codex 공식 설치 프로그램 (install.ps1)
       path.join(home, '.local', 'bin'),
       path.join(home, 'AppData', 'Roaming', 'npm'),
       path.join(home, 'AppData', 'Local', 'Microsoft', 'WinGet', 'Links'),
@@ -175,5 +234,6 @@ function failureFrom(result, label) {
 
 module.exports = {
   PAID_API_ENV, subscriptionOnlyEnv, resolveBinary, runCli, killTree, classifyFailure, failureFrom,
+  mergePaths, expandWinVars, freshWindowsPath,
   LimitError, AuthError, NotInstalledError,
 };

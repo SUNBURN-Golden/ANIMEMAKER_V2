@@ -21,7 +21,8 @@ const AGENTS = {
     subscription: 'ChatGPT Plus / Pro / Business',
     bins: ['codex'],
     caps: { text: true, image: true },
-    install: { win: 'npm install -g @openai/codex', other: 'npm install -g @openai/codex', note: 'Node.js(https://nodejs.org) 가 먼저 설치되어 있어야 합니다.' },
+    // 공식 설치 프로그램 (Node.js 필요 없음). npm(@openai/codex)으로 설치한 것도 그대로 찾는다.
+    install: { win: 'irm https://chatgpt.com/codex/install.ps1 | iex', other: 'curl -fsSL https://chatgpt.com/codex/install.sh | sh' },
     login: 'codex login',
     loginNote: '창이 뜨면 "Sign in with ChatGPT" 를 선택하세요. (API key 로그인은 종량제 과금이라 쓰지 마세요)',
     textArgs: (c) => ['exec', '--skip-git-repo-check', '--sandbox', 'read-only', '--color', 'never',

@@ -9,6 +9,7 @@ const path = require('path');
 const { Store } = require('./store');
 const { ProjectRunner } = require('./pipeline/runner');
 const { AGENTS, agentStatus, agentTest, agentText, agentImage, findBin } = require('./ai/agents');
+const { subscriptionOnlyEnv } = require('./ai/cli');
 const { BotManager } = require('./ai/webbot/manager');
 const { SITES } = require('./ai/helper');
 const demo = require('./ai/demo');
@@ -109,19 +110,19 @@ function openConsole(title, lines, { powershell = false } = {}) {
         "Write-Host '끝났습니다. 이 창을 닫고 AnimeMaker V2 에서 [상태 확인] 을 눌러 주세요.'",
       ].join('\r\n');
       fs.writeFileSync(file, `﻿${body}`, 'utf8');
-      spawn('cmd.exe', ['/c', 'start', '""', 'powershell.exe', '-NoExit', '-ExecutionPolicy', 'Bypass', '-File', file], { detached: true, windowsHide: false });
+      spawn('cmd.exe', ['/c', 'start', '""', 'powershell.exe', '-NoExit', '-ExecutionPolicy', 'Bypass', '-File', file], { detached: true, windowsHide: false, env: subscriptionOnlyEnv() });
     } else {
       const file = path.join(dir, `${Date.now()}.cmd`);
       const body = ['@echo off', 'chcp 65001 > nul', `title ${title}`, ...lines, 'echo.', 'echo 끝났습니다. 이 창을 닫고 AnimeMaker V2 에서 [상태 확인] 을 눌러 주세요.', 'pause'].join('\r\n');
       fs.writeFileSync(file, body, 'utf8');
-      spawn('cmd.exe', ['/c', 'start', '""', file], { detached: true, windowsHide: false });
+      spawn('cmd.exe', ['/c', 'start', '""', file], { detached: true, windowsHide: false, env: subscriptionOnlyEnv() });
     }
     return true;
   }
   const file = path.join(dir, `${Date.now()}.sh`);
   fs.writeFileSync(file, `#!/bin/sh\n${lines.join('\n')}\necho; echo "끝났습니다. 창을 닫으세요."; read _\n`, { mode: 0o755 });
   const term = process.platform === 'darwin' ? ['open', ['-a', 'Terminal', file]] : ['x-terminal-emulator', ['-e', file]];
-  try { spawn(term[0], term[1], { detached: true }); } catch (_) { return false; }
+  try { spawn(term[0], term[1], { detached: true, env: subscriptionOnlyEnv() }); } catch (_) { return false; }
   return true;
 }
 
@@ -366,7 +367,8 @@ function registerIpc() {
     const a = AGENTS[id];
     let bin = a.bins[0];
     try { bin = findBin(id, store.getSettings()); } catch (_) { /* PATH 에서 찾기 */ }
-    const q = process.platform === 'win32' ? `"${bin}"` : `'${bin}'`;
+    // .cmd(npm 으로 설치한 경우) 는 CALL 로 불러야 로그인 뒤 안내 문구까지 이어서 나온다
+    const q = process.platform === 'win32' ? `${/\.(cmd|bat)$/i.test(bin) ? 'call ' : ''}"${bin}"` : `'${bin}'`;
     const cmd = a.login.replace(/^\S+/, q);
     const note = process.platform === 'win32'
       ? `echo ${a.loginNote.replace(/[&|<>^%]/g, ' ')}`
