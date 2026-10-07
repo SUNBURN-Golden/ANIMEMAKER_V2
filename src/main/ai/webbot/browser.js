@@ -4,7 +4,6 @@
 // (로그인은 사용자가 그 창에서 직접 한 번만 하면 쿠키가 프로필에 남는다)
 const { spawn } = require('child_process');
 const fs = require('fs');
-const net = require('net');
 const os = require('os');
 const path = require('path');
 const http = require('http');
@@ -40,17 +39,6 @@ function findBrowser(pref, customPath) {
   return candidatesFor(pref).find((p) => { try { return fs.statSync(p).isFile(); } catch (_) { return false; } }) || null;
 }
 
-function freePort() {
-  return new Promise((resolve, reject) => {
-    const srv = net.createServer();
-    srv.listen(0, '127.0.0.1', () => {
-      const { port } = srv.address();
-      srv.close(() => resolve(port));
-    });
-    srv.on('error', reject);
-  });
-}
-
 function getJson(url) {
   return new Promise((resolve, reject) => {
     const req = http.get(url, (res) => {
@@ -84,9 +72,12 @@ class BotBrowser {
     const exe = findBrowser(o.prefer, o.browserPath);
     if (!exe) throw new Error('Edge 또는 Chrome 브라우저를 찾지 못했습니다. 설정에서 브라우저 위치를 지정해 주세요.');
     fs.mkdirSync(o.profileDir, { recursive: true });
-    this.port = await freePort();
+    // 포트는 브라우저가 직접 고르게 하고(0), 준비되면 프로필 폴더에 쓰는 DevToolsActivePort 파일에서 읽는다.
+    // (미리 빈 포트를 골라 두면 그 사이 다른 프로그램이 가져갈 수 있다)
+    const portFile = path.join(o.profileDir, 'DevToolsActivePort');
+    try { fs.unlinkSync(portFile); } catch (_) { /* 없으면 그만 */ }
     const args = [
-      `--remote-debugging-port=${this.port}`,
+      '--remote-debugging-port=0',
       `--user-data-dir=${o.profileDir}`,
       '--no-first-run',
       '--no-default-browser-check',
@@ -97,14 +88,28 @@ class BotBrowser {
     if (o.extraArgs) args.push(...o.extraArgs);
     args.push(o.startUrl || 'about:blank');
     this.proc = spawn(exe, args, { stdio: 'ignore', windowsHide: false, detached: false });
-    const until = Date.now() + 30000;
+    this.port = 0;
+    const until = Date.now() + (o.startTimeoutMs || 60000);
     let ok = false;
     while (Date.now() < until) {
-      try { await getJson(`http://127.0.0.1:${this.port}/json/version`); ok = true; break; } catch (_) { await sleep(400); }
+      if (!this.port) {
+        try {
+          const port = Number(fs.readFileSync(portFile, 'utf8').split(/\r?\n/)[0]);
+          if (port > 0) this.port = port;
+        } catch (_) { /* 아직 준비 전 */ }
+      }
+      if (this.port) {
+        try { await getJson(`http://127.0.0.1:${this.port}/json/version`); ok = true; break; } catch (_) { /* 아직 준비 전 */ }
+      }
       if (this.proc.exitCode !== null) break;
+      await sleep(300);
     }
     if (!ok) {
-      throw new Error('자동 클릭용 브라우저를 열지 못했습니다. 같은 프로필의 브라우저 창이 이미 열려 있다면 닫고 다시 시도하세요.');
+      const exited = this.proc.exitCode !== null;
+      try { if (!exited) this.proc.kill(); } catch (_) { /* noop */ }
+      throw new Error(exited
+        ? '자동 클릭용 브라우저를 열지 못했습니다. 같은 프로필의 브라우저 창이 이미 열려 있다면 닫고 다시 시도하세요.'
+        : '자동 클릭용 브라우저가 1분 안에 준비되지 않았습니다. 컴퓨터가 바쁘면 잠시 뒤 다시 시도하세요.');
     }
     this.browser = await pw().connectOverCDP(`http://127.0.0.1:${this.port}`);
     this.context = this.browser.contexts()[0] || await this.browser.newContext();
@@ -129,4 +134,4 @@ class BotBrowser {
 
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
-module.exports = { BotBrowser, findBrowser, freePort };
+module.exports = { BotBrowser, findBrowser };
