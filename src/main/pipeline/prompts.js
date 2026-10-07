@@ -172,6 +172,8 @@ function composeDrawingPrompt({ plan, series, shot, drawing, wf }) {
   if (series && series.bible && series.bible.notes_en) lines.push(`Series rules: ${series.bible.notes_en}`);
   if (fixed.length) {
     lines.push('CONSISTENCY (most important): the character must look EXACTLY like the attached character reference sheets — same face shape, eye shape and eye color, hairstyle and hair color, body proportions and height, outfit, accessories and colors, same line weight and cel coloring. Do not redesign, restyle, age up or down, or change clothes.');
+  } else if (others.length) {
+    lines.push('Keep every character exactly as described above (same face, hair, outfit and colors) — this drawing must match the other drawings of the same video.');
   }
   lines.push('Keep the same background, camera angle, lighting and color grading as the other drawings of this shot; only the pose, action and expression change.');
   lines.push(`Composition for a ${wf.aspect} frame, drawn a little wider than needed with margin around the subject (the camera will pan and zoom over this drawing).`);

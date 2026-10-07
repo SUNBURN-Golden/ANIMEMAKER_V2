@@ -172,10 +172,11 @@ async function renderShot(o) {
       let dx = 0;
       let dy = 0;
       if (o.boil) {
-        // 2프레임마다 바뀌는 아주 작은 흔들림 (손으로 찍은 셀 애니 느낌)
+        // 2프레임마다 바뀌는 아주 작은 흔들림과 크기 떨림 (손으로 찍은 셀 애니의 '라인 보일' 느낌)
         const k = Math.floor(r / 2);
         dx += (rand(seed, k, 1) - 0.5) * 1.1;
         dy += (rand(seed, k, 2) - 0.5) * 1.1;
+        fr.zoom = Math.max(1, fr.zoom * (1 + (rand(seed, k, 5) - 0.5) * 0.0025));
       }
       const amp = (cam.move === 'shake' ? (cam.shake || 0.012) : 0) + st.shake * 0.02;
       if (amp > 0) {

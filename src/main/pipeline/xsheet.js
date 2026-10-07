@@ -299,8 +299,10 @@ function fitExposure(exp, N, { unit = 1, min = 2 } = {}) {
   const minU = Math.max(1, Math.ceil(min / unit));
   const T = Math.floor(N / unit);
   if (T < 1) return [{ drawing: list[0].drawing, frames: N }];
-  let w = list.map((e) => Math.max(minU, Math.round(e.frames / unit)));
-  const cycleLike = list.length >= 3 && Math.max(...list.map((e) => e.frames)) <= 4 * unit;
+  // 2프레임씩 넘기는 컷(하이라이트)에서 짧은 노출(4프레임 이하)은 정확히 2프레임으로
+  let w = list.map((e) => (unit === 2 && e.frames <= 4 ? 1 : Math.max(minU, Math.round(e.frames / unit))));
+  // 짧은 노출만 있으면 '반복 패턴' 으로 본다 (하이라이트는 A,B 두 장만이어도 A-B-A-B…)
+  const cycleLike = list.length >= (unit === 2 ? 2 : 3) && Math.max(...list.map((e) => e.frames)) <= 4 * unit;
   if (cycleLike) {
     // 패턴 반복 또는 자르기
     const pat = list.map((e, i) => ({ drawing: e.drawing, w: w[i] }));

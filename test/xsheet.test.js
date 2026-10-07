@@ -59,6 +59,20 @@ test('LLM frames that do not add up are fixed exactly (over, under, seconds, cyc
   assert.ok(xs.shots[0].exposure[0].frames > xs.shots[0].exposure[1].frames, 'proportions kept when scaling');
 });
 
+test('a short highlight pattern repeats on 2s instead of being stretched into holds', () => {
+  const ctx = makeCtx([4, 4], { highlight: [2], budget: 3 });
+  const raw = { shots: [
+    { shot: 1, drawings: ['a'], exposure: ['A:96'] },
+    { shot: 2, highlight: true, drawings: ['run 1', 'run 2'], exposure: ['A:2', 'B:3'] },
+  ] };
+  const xs = X.normalizeXsheet(raw, ctx);
+  checkTotals(xs, ctx);
+  const hl = xs.shots[1];
+  assert.strictEqual(hl.drawings.length, 2, 'budget 3 leaves no room for in-betweens');
+  assert.strictEqual(hl.exposure.length, 48, 'A-B-A-B… for the whole shot');
+  assert.ok(hl.exposure.every((e, i) => e.frames === 2 && e.drawing === (i % 2 ? 'B' : 'A')));
+});
+
 test('highlight shots get more drawings than normal shots, and the budget is a hard cap', () => {
   const durs = [6, 4, 8, 5, 6, 4, 7, 5];
   const ctx = makeCtx(durs, { highlight: [2, 4, 6], budget: 22 });

@@ -472,7 +472,7 @@
       const v = it && it.updatedAt;
       return h('div', { class: 'xs-draw', title: d.prompt_en },
         h('div', { class: 'thumb', style: { aspectRatio: ar, borderColor: dcolor(d.id) } },
-          it && it.file && it.status !== 'running' ? h('img', { src: url(snap, it.file, v), onclick: () => bigImage(snap, it.file, v) })
+          it && it.file && it.status !== 'running' ? h('img', { src: url(snap, it.file, v), loading: 'lazy', onclick: () => bigImage(snap, it.file, v) })
             : h('div', { class: 'ph' }, it && it.status === 'running' ? '그리는 중…' : it && it.status === 'error' ? '⚠ 실패' : '대기'),
           h('span', { class: 'badge', style: { background: dcolor(d.id) } }, d.id),
           h('span', { class: 'badge r' }, `${used.get(d.id) || 0}f`)),
@@ -559,7 +559,7 @@
   function drawingCard(snap, it, ar) {
     const v = it.updatedAt || 0;
     let media;
-    if (it.file && it.status !== 'running') media = h('img', { src: url(snap, it.file, v), onclick: () => bigImage(snap, it.file, v) });
+    if (it.file && it.status !== 'running') media = h('img', { src: url(snap, it.file, v), loading: 'lazy', onclick: () => bigImage(snap, it.file, v) });
     else if (it.status === 'running') media = h('div', { class: 'col', style: { alignItems: 'center' } }, h('div', { class: 'spinner' }), h('div', { class: 'ph' }, '그리는 중…'));
     else media = h('div', { class: 'ph' }, it.status === 'error' ? '⚠ 실패' : it.status === 'skipped' ? '건너뜀' : '대기 중');
     const shot = snap.xsheet && snap.xsheet.shots.find((x) => x.shot === it.shot);
