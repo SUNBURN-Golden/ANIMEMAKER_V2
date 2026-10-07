@@ -18,7 +18,7 @@ const demo = require('../ai/demo');
 const { waitForNewDownload, SITES, EXTS } = require('../ai/helper');
 const { NeedsUserError } = require('../ai/webbot/engine');
 const { analyzeSong } = require('../media/audio');
-const { estimateLyricTiming, segmentSong, toSrt, toLrc } = require('../media/timeline');
+const { estimateLyricTiming, scaledCutRange, segmentSong, toSrt, toLrc } = require('../media/timeline');
 const { outputSize, buildAss, assembleAnimation, burnSubtitles, makePaperTexture } = require('../media/assemble');
 const { renderShot } = require('../media/render');
 const { parseLyrics, sectionSummary } = require('../media/lyrics');
@@ -392,8 +392,10 @@ class ProjectRunner extends EventEmitter {
         lyrics = this.p.timing.lyrics; // 그 사이 탭으로 맞췄거나 가사를 고쳤을 수 있다
       }
     }
+    const range = scaledCutRange(this.wf.minClips, this.wf.maxClips, analysis.duration);
+    if (range.minClips !== this.wf.minClips) this.log(`ℹ 3분보다 짧은 노래라서 컷 수를 ${range.minClips}~${range.maxClips}개로 줄였어요. (워크플로우의 컷 수는 3~4분 노래 기준)`);
     const segments = segmentSong(analysis, lyrics, parts, {
-      minClips: this.wf.minClips, maxClips: this.wf.maxClips, minLen: this.wf.minClipSec, maxLen: this.wf.maxClipSec, pace: this.wf.pace,
+      minClips: range.minClips, maxClips: range.maxClips, minLen: this.wf.minClipSec, maxLen: this.wf.maxClipSec, pace: this.wf.pace,
     });
     this.p.timing.segments = segments;
     this.p.timing.frames = X.shotFrames(segments);

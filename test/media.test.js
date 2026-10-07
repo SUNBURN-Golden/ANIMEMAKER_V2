@@ -59,6 +59,13 @@ test('segmentation respects beats, clip count and lengths', () => {
   assert.ok(segs.every((s) => typeof s.level === 'number'), 'numeric energy level for highlight ranking');
 });
 
+test('cut counts are for 3-4 minute songs; shorter songs get proportionally fewer cuts', () => {
+  assert.deepStrictEqual(T.scaledCutRange(16, 28, 210), { minClips: 16, maxClips: 28 });
+  assert.deepStrictEqual(T.scaledCutRange(16, 28, 180), { minClips: 16, maxClips: 28 });
+  assert.deepStrictEqual(T.scaledCutRange(16, 28, 90), { minClips: 8, maxClips: 14 });
+  assert.deepStrictEqual(T.scaledCutRange(16, 28, 10), { minClips: 2, maxClips: 2 });
+});
+
 test('srt/lrc formatting', () => {
   const srt = T.toSrt([{ text: '안녕', start: 1.234, end: 3.5 }]);
   assert.match(srt, /00:00:01,234 --> 00:00:03,500/);

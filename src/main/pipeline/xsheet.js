@@ -96,11 +96,16 @@ function idealCount(frames, highlight) {
   return highlight ? clamp(Math.round(sec * 1.5), HIGHLIGHT_MIN, HIGHLIGHT_MAX) : clamp(Math.round(sec / 4), 1, NORMAL_MAX);
 }
 
-/** 예산에 맞게 컷별 장수를 줄인다. 보통 컷부터 줄이고, 하이라이트는 끝까지 보통 컷보다 많게 남긴다. */
+/**
+ * 예산에 맞게 컷별 장수를 줄인다. 보통 컷은 2장까지, 하이라이트는 8장까지 먼저 줄이고,
+ * 그다음 보통 컷 1장 → 하이라이트 6장 → … 순서. 하이라이트는 끝까지 보통 컷보다 많게 남긴다.
+ */
 function fitCountsToBudget(counts, highlights, budget) {
   const c = counts.slice();
   let total = sum(c);
   const passes = [
+    (i) => !highlights[i] && c[i] > 2,
+    (i) => highlights[i] && c[i] > 8,
     (i) => !highlights[i] && c[i] > 1,
     (i) => highlights[i] && c[i] > HIGHLIGHT_MIN,
     (i) => highlights[i] && c[i] > 3,

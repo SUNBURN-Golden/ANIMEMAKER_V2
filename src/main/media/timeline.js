@@ -80,6 +80,17 @@ function estimateLyricTiming(lines, parts, analysis, opts = {}) {
 }
 
 /**
+ * 워크플로우의 컷 수는 3~4분 노래 기준이다. 3분보다 짧은 노래는 길이에 맞춰 줄인다
+ * (1분짜리 노래를 16컷 넘게 자르면 그림 장수 예산이 너무 잘게 나뉜다).
+ */
+function scaledCutRange(minClips, maxClips, duration) {
+  if (!(duration > 0) || duration >= 180) return { minClips, maxClips };
+  const k = duration / 180;
+  const lo = Math.max(2, Math.round(minClips * k));
+  return { minClips: lo, maxClips: Math.max(lo, Math.round(maxClips * k)) };
+}
+
+/**
  * 박자에 맞춘 컷 나누기 (동적계획법).
  * - 컷 경계는 반드시 박자 위에 놓이고, 마디 첫 박·가사 줄 시작·파트 경계를 우대한다.
  * - 각 컷 길이는 minLen~maxLen 초.
@@ -242,5 +253,5 @@ function round2(x) { return Math.round(x * 100) / 100; }
 function round3(x) { return Math.round(x * 1000) / 1000; }
 
 module.exports = {
-  TRANSITIONS, syllables, estimateLyricTiming, segmentSong, resolveTransitions, toSrt, toLrc,
+  TRANSITIONS, syllables, estimateLyricTiming, scaledCutRange, segmentSong, resolveTransitions, toSrt, toLrc,
 };

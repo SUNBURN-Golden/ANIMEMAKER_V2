@@ -9,6 +9,7 @@ const { Store } = require('../src/main/store');
 const { ProjectRunner, STEPS } = require('../src/main/pipeline/runner');
 const { probe, countFrames } = require('../src/main/media/ffmpeg');
 const demo = require('../src/main/ai/demo');
+const { scaledCutRange } = require('../src/main/media/timeline');
 
 function newStore() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'animemaker2-'));
@@ -22,7 +23,7 @@ test('demo pipeline: series episode → lyric tap → timesheet → drawings →
   const { store } = newStore();
   const { series, character } = await demo.createDemoSeries(store);
   assert.ok(character.isLocked && character.refs.length === 3);
-  const wf = { ...store.getWorkflow('builtin-cel-wide'), minClips: 5, maxClips: 6, minClipSec: 2, maxClipSec: 10, quality: '480p' };
+  const wf = { ...store.getWorkflow('builtin-cel-wide'), minClips: 18, maxClips: 24, minClipSec: 2, maxClipSec: 10, quality: '480p' };
   const project = store.createProject('', wf, {}, { seriesId: series.id });
   project.demoSongSeconds = 30;
   store.saveProject(project);
@@ -48,7 +49,11 @@ test('demo pipeline: series episode → lyric tap → timesheet → drawings →
   assert.ok(p.plan.characters[0].fixed);
   // 타이밍 · 타임시트
   assert.strictEqual(p.timing.lyricsSource, 'tap');
-  assert.ok(p.timing.segments.length >= 5 && p.timing.segments.length <= 6, `segments ${p.timing.segments.length}`);
+  // 30초 노래라서 3~4분 기준 컷 수(18~24)를 길이에 맞춰 줄인다
+  const range = scaledCutRange(18, 24, p.music.analysis.duration);
+  assert.ok(range.minClips >= 3 && range.maxClips <= 5, JSON.stringify(range));
+  assert.ok(p.timing.segments.length >= range.minClips && p.timing.segments.length <= range.maxClips, `segments ${p.timing.segments.length}`);
+  assert.ok(logs.some((l) => /짧은 노래라서 컷 수를/.test(l)));
   const xs = p.xsheet;
   assert.strictEqual(xs.fps, 24);
   assert.strictEqual(xs.totalFrames, Math.round(p.music.analysis.duration * 24));

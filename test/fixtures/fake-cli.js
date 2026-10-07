@@ -43,7 +43,8 @@ const demo = require(path.join(process.env.FAKE_REPO_ROOT, 'src', 'main', 'ai', 
 let answer;
 if (/"exposure"/.test(prompt)) {
   // 타임시트: 지시문의 컷 목록을 읽어서, 일부러 프레임 합계가 안 맞는 노출표를 돌려준다 (PC 가 고쳐야 함)
-  const shots = [...prompt.matchAll(/- shot (\d+): .*?= (\d+) frames(.*)/g)].map((m) => ({ shot: Number(m[1]), frames: Number(m[2]), hl: /HIGHLIGHT/.test(m[3]) }));
+  // 하이라이트는 번갈아 (짝수 번째 컷) — 컷이 2개뿐이어도 보통 컷과 하이라이트가 하나씩 나오게
+  const shots = [...prompt.matchAll(/- shot (\d+): .*?= (\d+) frames/g)].map((m, i) => ({ shot: Number(m[1]), frames: Number(m[2]), hl: i % 2 === 1 }));
   answer = {
     shots: shots.map((s, i) => (s.hl
       ? {
