@@ -153,20 +153,12 @@ function charactersInShot(plan, shot, drawing) {
   return (plan.characters || []).filter((c) => (shot.characters || []).some((n) => sameName(n, c.name)) || (c.name && text.includes(c.name.toLowerCase())));
 }
 
-/**
- * 그림 한 장의 프롬프트 (영어). 캐릭터 고정 설명 · 팔레트 · 규칙을 '그대로' 넣고 일관성 지시를 강하게 건다.
- * @param {{plan:object, series?:object, shot:object, drawing:object, wf:object}} o
- */
-function composeDrawingPrompt({ plan, series, shot, drawing, wf }) {
-  const style = (series && series.bible && series.bible.art_en) || plan.visual_style || wf.visualStyle;
+/** 컷에 나오는 인물 블록: 고정 캐릭터는 잠긴 설명·팔레트·규칙 그대로 + 일관성 지시 */
+function castLines(plan, series, shot, drawing) {
   const cast = charactersInShot(plan, shot, drawing);
   const fixed = series ? cast.filter((c) => c.fixed).map((c) => series.characters.find((s) => s.name === c.name)).filter(Boolean) : [];
   const others = cast.filter((c) => !fixed.some((f) => f.name === c.name));
-  const lines = [
-    `One drawing (a single frame) from a hand-drawn 2D cel animation sequence. Art style: ${style}.`,
-    `Scene (shared by every drawing of this shot): ${shot.scene_en || plan.world_en}${shot.framing_en ? `. Framing: ${shot.framing_en}` : ''}.`,
-    `This drawing: ${drawing.prompt_en}.`,
-  ];
+  const lines = [];
   for (const c of fixed) lines.push(characterBlock(c));
   for (const c of others) if (c.appearance_en) lines.push(`${c.name}: ${c.appearance_en}`);
   if (series && series.bible && series.bible.notes_en) lines.push(`Series rules: ${series.bible.notes_en}`);
@@ -175,9 +167,77 @@ function composeDrawingPrompt({ plan, series, shot, drawing, wf }) {
   } else if (others.length) {
     lines.push('Keep every character exactly as described above (same face, hair, outfit and colors) — this drawing must match the other drawings of the same video.');
   }
-  lines.push('Keep the same background, camera angle, lighting and color grading as the other drawings of this shot; only the pose, action and expression change.');
-  lines.push(`Composition for a ${wf.aspect} frame, drawn a little wider than needed with margin around the subject (the camera will pan and zoom over this drawing).`);
-  lines.push('No text, no letters, no speech bubbles, no captions, no watermark, no signature, no frame border.');
+  return lines;
+}
+
+function artStyle(plan, series, wf) {
+  return (series && series.bible && series.bible.art_en) || plan.visual_style || wf.visualStyle;
+}
+
+/**
+ * 배경 그림(BG plate) 프롬프트: 컷마다 한 장, 인물 없이 장소만.
+ * @param {{plan:object, series?:object, shot:object, wf:object}} o
+ */
+function composeBgPrompt({ plan, series, shot, wf }) {
+  const place = (shot.bg && shot.bg.prompt_en) || shot.scene_en || plan.world_en || '';
+  const lines = [
+    `Background painting (BG plate) for one shot of a hand-drawn 2D cel animation. Art style: ${artStyle(plan, series, wf)}.`,
+    `Place: ${place}${shot.framing_en ? `. Framing: ${shot.framing_en}` : ''}.`,
+    'Paint ONLY the place: no characters, no people, no animals as subjects. Leave open space where the action happens — the characters are drawn on separate cels and placed on top later.',
+  ];
+  const names = (plan.characters || []).map((c) => c.name).filter(Boolean);
+  if (names.some((n) => place.includes(n))) lines.push(`The place description mentions ${names.filter((n) => place.includes(n)).join(', ')} only to explain the scene — do NOT paint them or anyone else.`);
+  if (series && series.bible && series.bible.notes_en) lines.push(`Series rules: ${series.bible.notes_en}`);
+  lines.push(`Composition for a ${wf.aspect} frame, painted a little wider than needed (the camera will pan and zoom over it).`);
+  lines.push('No text, no letters, no captions, no watermark, no signature, no frame border.');
+  return lines.join('\n');
+}
+
+/**
+ * 인물 셀 프롬프트: 인물만, 아주 평평한 단색(크로마키) 배경 위에. PC 가 그 배경을 지운다.
+ * @param {{plan:object, series?:object, shot:object, drawing:object, wf:object, keyColor:string}} o
+ */
+function composeCelPrompt({ plan, series, shot, drawing, wf, keyColor }) {
+  const hex = String(keyColor || '#00ff00').toUpperCase();
+  const name = /FF00FF/.test(hex) ? 'magenta' : 'green';
+  const lines = [
+    `One character cel (a single drawing) from a hand-drawn 2D cel animation sequence. Art style for the characters: ${artStyle(plan, series, wf)}.`,
+    `Shot framing: ${shot.framing_en || 'medium shot'}. The scene (painted separately, NOT part of this image) is: ${shot.scene_en || plan.world_en} — light the character to match it.`,
+    `This drawing: ${drawing.prompt_en}.`,
+    ...castLines(plan, series, shot, drawing),
+    `BACKGROUND: plain flat solid ${name} ${hex} background filling the whole image. No scenery, no floor, no ground line, no cast shadow, no gradient, no texture, no border. Never use this ${name} color on the character.`,
+    'Keep the character at the size and position the framing implies, and at the same scale in every drawing of this shot.',
+    `Composition for a ${wf.aspect} frame.`,
+    'No text, no letters, no speech bubbles, no captions, no watermark, no signature.',
+  ];
+  return lines.join('\n');
+}
+
+/** 같은 컷의 다음 열쇠 그림: 앞 셀을 첫 번째로 붙이고 '고치기' 로 부탁한다 (그때그때 앞에 붙임) */
+function celEditPrefix(drawing, keyColor) {
+  const hex = keyColor ? String(keyColor).toUpperCase() : '';
+  return [
+    `EDIT MODE: Edit the first attached image (the previous drawing of this same shot). Change only this: ${drawing.prompt_en}.`,
+    `Keep the character's design, line style, colours, size and position on the frame the same${hex ? `, and keep the plain flat solid ${hex} background` : ', and keep the same background'}.`,
+    '',
+  ].join('\n');
+}
+
+/**
+ * 그림 한 장의 프롬프트 (영어). 캐릭터 고정 설명 · 팔레트 · 규칙을 '그대로' 넣고 일관성 지시를 강하게 건다.
+ * (배경과 인물을 따로 그리지 않을 때 쓰는 '전체 화면' 그림)
+ * @param {{plan:object, series?:object, shot:object, drawing:object, wf:object}} o
+ */
+function composeDrawingPrompt({ plan, series, shot, drawing, wf }) {
+  const lines = [
+    `One drawing (a single frame) from a hand-drawn 2D cel animation sequence. Art style: ${artStyle(plan, series, wf)}.`,
+    `Scene (shared by every drawing of this shot): ${shot.scene_en || plan.world_en}${shot.framing_en ? `. Framing: ${shot.framing_en}` : ''}.`,
+    `This drawing: ${drawing.prompt_en}.`,
+    ...castLines(plan, series, shot, drawing),
+    'Keep the same background, camera angle, lighting and color grading as the other drawings of this shot; only the pose, action and expression change.',
+    `Composition for a ${wf.aspect} frame, drawn a little wider than needed with margin around the subject (the camera will pan and zoom over this drawing).`,
+    'No text, no letters, no speech bubbles, no captions, no watermark, no signature, no frame border.',
+  ];
   return lines.join('\n');
 }
 
@@ -228,5 +288,5 @@ function validCharacterDescription(o) {
 
 module.exports = {
   TRANSITION_TYPES, planPrompt, validPlan, normalizePlan, fmtTime, summarizeEnergy, seriesBlock,
-  charactersInShot, composeDrawingPrompt, characterSheetPrompt, describeCharacterPrompt, validCharacterDescription, sameName,
+  charactersInShot, composeDrawingPrompt, composeBgPrompt, composeCelPrompt, celEditPrefix, characterSheetPrompt, describeCharacterPrompt, validCharacterDescription, sameName,
 };

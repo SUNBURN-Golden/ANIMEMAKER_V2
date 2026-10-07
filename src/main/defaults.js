@@ -52,7 +52,15 @@ const BASE_WORKFLOW = {
   minClipSec: 2,
   maxClipSec: 16,
   pace: 'normal',
-  // 그림 장수 예산: 0 = 노래 길이로 자동 (3분 ≈ 68장, 4분 ≈ 90장). 구독 사용량을 지키기 위한 상한선
+  // 움직임 방식
+  //  ghibli : 지브리식 — 노래의 40~50% (후렴·신나는 컷)만 1초에 열쇠 그림 6~8장 + PC 가 사이 그림, 나머지는 멈춘 그림 + 카메라
+  //  full   : 모든 컷을 움직임 (그림이 아주 많이 필요)
+  //  limited: 리미티드 — 컷마다 그림 몇 장 + 카메라 (가장 적게 그림)
+  motionMode: 'ghibli',
+  keyRate: 6, // 움직이는 컷의 1초당 열쇠 그림 (6 → 4프레임씩, 8 → 3프레임씩)
+  inbetween: 'auto', // 사이 그림: auto(RIFE 있으면 RIFE, 없으면 ffmpeg) | rife | ffmpeg | off
+  layers: true, // 배경 판 + 인물 셀(단색 배경을 빼서 투명하게) 따로 그려서 겹치기
+  // 그림 장수 예산 (상한선): 0 = 움직임 방식에 맞춰 자동. 숫자를 적으면 그보다 많이 그리지 않는다 (구독 사용량 지키기)
   drawingBudget: 0,
   transitionStyle: 'mixed',
   // 손그림 필름 느낌 마무리 (내 PC 에서 렌더링할 때 입힘)
@@ -62,7 +70,7 @@ const BASE_WORKFLOW = {
   lyricSyncPause: true, // 가사에 시간이 없으면 컷을 나누기 전에 '탭으로 가사 맞추기' 기회를 준다
   reviewAfterPlan: false,
   reviewAfterTiming: false,
-  reviewAfterXsheet: false, // 타임시트(그릴 장수)를 보고 그리기 전에 멈추기
+  reviewBeforeDrawings: true, // 그리기 전에 '그림 약 N장, 약 H시간' 예상을 보여 주고 멈추기 (체험 모드는 안 멈춤)
 };
 
 const BUILTIN_WORKFLOWS = [
@@ -72,7 +80,7 @@ const BUILTIN_WORKFLOWS = [
     builtin: true,
     emoji: '🌿',
     name: '손그림 셀 애니 (가로 16:9)',
-    description: '유튜브용 가로 화면. 보통 장면은 그림 몇 장을 길게 보여 주며 카메라가 천천히 움직이고, 후렴은 그림을 많이 써서 활기차게 움직여요. 처음이라면 이걸로!',
+    description: '유튜브용 가로 화면. 후렴·신나는 장면은 1초에 6장 + 사이 그림으로 부드럽게 움직이고(지브리식), 조용한 장면은 그림 몇 장을 길게 보여 주며 카메라가 천천히 움직여요. 처음이라면 이걸로!',
   },
   {
     ...BASE_WORKFLOW,

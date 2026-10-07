@@ -2,8 +2,13 @@
 // 타임시트(X-sheet, 엑스시트): LLM 이 짜고 내 PC 가 검사·정리하는 '그림 노출표'.
 //  - 컷(샷)마다: 그릴 그림 목록(영어 프롬프트), 노출 순서 {그림, 프레임 수} (1초 = 24프레임),
 //    카메라 움직임(시작·끝 구도), 효과(fx), 하이라이트 여부
-//  - 섞기 규칙: 보통 컷 = 그림 1~4장을 길게 보여 주며 카메라가 움직임 (리미티드 애니메이션)
-//               하이라이트 컷(후렴·센 마디) = 그림 6~12장을 2프레임씩 (on 2s) 넘겨서 부드럽게
+//  - 움직임 방식 (워크플로우 motionMode)
+//      지브리식(ghibli, 기본): 움직이는 컷(노래의 40~50%)만 1초에 열쇠 그림 6~8장(각 4·3프레임),
+//                              조용한 컷은 그림 1~4장을 길게 + 카메라 움직임
+//      전체 움직임(full): 모든 컷이 1초에 6~8장
+//      리미티드(limited): 보통 컷 1~4장 길게, 하이라이트만 6~12장을 2프레임씩 (예전 방식)
+//    움직이는 컷은 이웃한 열쇠 그림 사이에 PC 가 사이 그림을 한 장씩 넣어 2프레임씩 넘긴다.
+//  - 배경과 인물을 따로: 컷마다 배경 그림(BG) 한 장 + 인물 셀(투명) 여러 장
 //  - PC 가 반드시 지키는 것: 컷의 프레임 합계 = 컷 길이(프레임), 그림 장수 예산, 망가진 JSON 고치기
 const { resolveTransitions, TRANSITIONS } = require('../media/timeline');
 
@@ -17,6 +22,8 @@ const NORMAL_MAX = 4;
 const HIGHLIGHT_MIN = 6;
 const HIGHLIGHT_MAX = 12;
 const CHORUS_RE = /(chorus|hook|refrain|drop|climax|후렴|하이라이트|클라이맥스)/i;
+const MODES = ['ghibli', 'full', 'limited'];
+const MOTION_SHARE = [0.4, 0.55]; // 지브리식: 움직이는 컷이 노래의 40~55%
 
 const f = (zoom, x = 0, y = 0) => ({ zoom, x, y });
 const CAMERA_PRESETS = {
@@ -81,13 +88,58 @@ function markHighlights(segments, lyrics = []) {
   return flags;
 }
 
+/** 움직이는 컷에서 열쇠 그림 한 장이 보이는 프레임 수 (1초 6장 → 4프레임, 8장 → 3프레임) */
+function keyFrames(keyRate) { return Number(keyRate) === 8 ? 3 : 4; }
+/** 움직이는 컷의 열쇠 그림 칸 수 */
+function motionSlots(frames, keyRate) { return Math.max(1, Math.floor(frames / keyFrames(keyRate))); }
+function normMode(m) { return MODES.includes(m) ? m : 'limited'; }
+
+/**
+ * 어느 컷을 움직일지 (PC 가 먼저 정하고, LLM 이 예산 안에서 바꿀 수 있다).
+ * 지브리식: 하이라이트 → 센 컷 → 중간 컷 순서로 노래의 40~55% 가 될 때까지. 조용한 컷은 멈춤.
+ */
+function assignMotion(segments, frames, highlights, mode) {
+  const m = normMode(mode);
+  if (m === 'full') return segments.map(() => true);
+  if (m === 'limited') return segments.map(() => false);
+  const total = sum(frames);
+  const lv = (s) => (typeof s.level === 'number' ? s.level : s.energy === 'high' ? 0.85 : s.energy === 'mid' ? 0.6 : 0.3);
+  const rank = (i) => (highlights[i] ? 2 : 0) + (segments[i].energy === 'high' ? 1 : 0) + lv(segments[i]);
+  const order = segments.map((_, i) => i).filter((i) => highlights[i] || segments[i].energy !== 'low').sort((a, b) => rank(b) - rank(a));
+  const flags = segments.map(() => false);
+  let acc = 0;
+  for (const i of order) {
+    if (acc >= MOTION_SHARE[0] * total) break;
+    if (acc > 0 && acc + frames[i] > MOTION_SHARE[1] * total) continue;
+    flags[i] = true;
+    acc += frames[i];
+  }
+  if (!flags.some(Boolean) && segments.length) {
+    const best = segments.map((_, i) => i).sort((a, b) => rank(b) - rank(a))[0];
+    if (frames[best] <= 0.6 * total) flags[best] = true;
+  }
+  return flags;
+}
+
 /** 그림 장수 예산 (0 = 자동: 3분 ≈ 68장, 4분 ≈ 90장) */
 function autoBudget(duration) {
   return clamp(Math.round(duration * 0.375), 8, 120);
 }
-function resolveBudget(wf, duration, shotCount) {
-  const want = Number(wf && wf.drawingBudget) > 0 ? Math.round(Number(wf.drawingBudget)) : autoBudget(duration);
-  return Math.max(shotCount, Math.min(400, want));
+
+/**
+ * 예산. plan 이 있으면 움직임 방식 기준 자동 예산:
+ * 움직이는 컷 (초 × 1초당 열쇠 그림) + 멈춤 컷 1~4장 + 컷마다 배경 1장. 워크플로우에 숫자를 적으면 그게 상한선.
+ * @param {{mode?:string, frames?:number[], motion?:boolean[], keyRate?:number, layers?:boolean}} [plan]
+ */
+function resolveBudget(wf, duration, shotCount, plan = null) {
+  const set = Number(wf && wf.drawingBudget) > 0 ? Math.round(Number(wf.drawingBudget)) : 0;
+  if (!plan) return Math.max(shotCount, Math.min(400, set || autoBudget(duration)));
+  const mode = normMode(plan.mode);
+  const bgs = plan.layers ? shotCount : 0;
+  let auto;
+  if (mode === 'limited') auto = autoBudget(duration) + bgs;
+  else auto = sum(plan.frames.map((n, i) => (plan.motion[i] ? motionSlots(n, plan.keyRate) : idealCount(n, false)))) + bgs;
+  return Math.max(shotCount + bgs, Math.min(3000, set || auto));
 }
 
 /** 컷 길이로 본 알맞은 그림 장수 */
@@ -145,16 +197,27 @@ function startFrames(segments) {
 
 /**
  * @param {{plan:object, series?:object, segments:object[], lyrics:object[], analysis:object, wf:object,
- *          frames:number[], highlights:boolean[], alloc:number[], budget:number}} ctx
+ *          frames:number[], highlights:boolean[], alloc:number[], budget:number,
+ *          mode?:string, keyRate?:number, motion?:boolean[], layers?:boolean}} ctx
  */
 function xsheetPrompt(ctx) {
   const { plan, series, segments, lyrics, analysis, wf, frames, highlights, alloc, budget } = ctx;
+  const mode = normMode(ctx.mode);
+  const keyRate = Number(ctx.keyRate) === 8 ? 8 : 6;
+  const unit = keyFrames(keyRate);
+  const motion = ctx.motion || segments.map(() => false);
+  const layers = !!ctx.layers;
   const starts = startFrames(segments);
   const shotLines = segments.map((s, i) => {
     const lyr = s.lyrics.map((k) => lyrics[k] && lyrics[k].text).filter(Boolean);
     const sec = [...new Set(s.lyrics.map((k) => lyrics[k] && lyrics[k].section).filter(Boolean))];
     const beats = beatFramesIn(s, analysis, starts[i]);
-    return `- shot ${s.index}: ${s.start.toFixed(2)}s → ${s.end.toFixed(2)}s = ${frames[i]} frames, energy ${s.energy}${sec.length ? ` [${sec.join(', ')}]` : ''}${highlights[i] ? ' HIGHLIGHT' : ''}, suggested drawings: ${alloc[i]}, beat frames: ${beats.slice(0, 40).join(',') || '-'}${lyr.length ? `, lyrics: "${lyr.join(' / ')}"` : ' (instrumental)'}`;
+    const kind = mode === 'limited'
+      ? `${highlights[i] ? ' HIGHLIGHT' : ''}, suggested drawings: ${alloc[i]}`
+      : motion[i]
+        ? ` MOTION: ${motionSlots(frames[i], keyRate)} key slots of ${unit} frames (unique keys up to ${motionSlots(frames[i], keyRate)}; a cycle of 4-8 keys is fine)`
+        : ` HOLD: 1-4 cels held long + camera move${highlights[i] ? ' (highlight)' : ''}`;
+    return `- shot ${s.index}: ${s.start.toFixed(2)}s → ${s.end.toFixed(2)}s = ${frames[i]} frames, energy ${s.energy}${sec.length ? ` [${sec.join(', ')}]` : ''}${kind}, beat frames: ${beats.slice(0, 40).join(',') || '-'}${lyr.length ? `, lyrics: "${lyr.join(' / ')}"` : ' (instrumental)'}`;
   }).join('\n');
   const trStyle = {
     cuts: 'Mostly hard cuts on the beat; at most 2 special transitions.',
@@ -164,9 +227,20 @@ function xsheetPrompt(ctx) {
   const fixed = series && series.characters && series.characters.length
     ? `Fixed characters (their design is LOCKED by character files and will be attached as reference images to every drawing; never redesign or rename them): ${series.characters.map((c) => c.name).join(', ')}.`
     : '';
+  const method = mode === 'limited' ? `Rules (limited animation):
+- NORMAL shots: 1 to ${NORMAL_MAX} drawings, held long (each exposure 3 frames or more, usually 8-48), and the camera moves over the drawing (pan / zoom / truck).
+- HIGHLIGHT shots (marked HIGHLIGHT: chorus, high-energy bars): ${HIGHLIGHT_MIN} to ${HIGHLIGHT_MAX} drawings "on 2s" (every exposure 2 frames). Use cycles: e.g. A,B,C,B repeating.`
+    : `Rules (${mode === 'full' ? 'full motion: every shot moves' : 'motion where it matters, calm parts held'}):
+- MOTION shots: key drawings at ${keyRate} per second — every exposure is exactly ${unit} frames (one key slot). The PC adds one in-between drawing between neighbouring keys, so the motion plays on 2s like hand-drawn feature animation.
+- In a MOTION shot each key must be a SMALL change from the previous key (a little further along the same movement: arm a bit higher, step a bit further, hair swinging a bit more). Same character size, same position on the frame unless walking, same framing. Small steps make clean in-betweens.
+- Cycles are encouraged for repeating motion (walk, run, waving, hair and cloth in the wind): e.g. {"cycle": ["A","B","C","D"], "each": ${unit}, "repeat": 6}. A cycle's drawings count only once.
+- You may switch a shot between MOTION and HOLD with "motion": true/false if the story needs it, but stay inside the budget.
+- HOLD shots: 1 to ${NORMAL_MAX} drawings held long (usually 12-72 frames each) while the camera moves (pan / zoom / truck). Calm, cinematic.`;
+  const layerRules = layers ? `
+- Layers: every shot has ONE background plate ("bg": the place only, no characters — it is painted once) and character cels ("drawings": the characters only, drawn on a plain flat background that the PC removes). So write bg.prompt_en about the place/time/light, and each drawing's prompt_en about the characters only.` : '';
   return `# Task: animation timesheet (X-sheet / exposure sheet) for a hand-drawn music video${series ? ` episode ${series.episode} of the series "${series.name}"` : ''}
 
-This video is classic limited cel animation, like 1980s-1990s hand-drawn feature animation: still drawings are shown one after another at ${FPS} frames per second, and the PC renders your timesheet EXACTLY (drawings, frame counts, camera moves). You decide how many drawings each shot needs and how long each drawing is held.
+This video is hand-drawn cel animation in the look of 1980s-1990s feature animation: still drawings are shown one after another at ${FPS} frames per second, and the PC renders your timesheet EXACTLY (drawings, frame counts, camera moves${layers ? ', background and character layers' : ''}).
 
 Story plan:
 ${JSON.stringify({ title: plan.title, logline: plan.logline, characters: plan.characters.map((c) => ({ name: c.name, role: c.role || '' })), world_en: plan.world_en, story: plan.story.map((s) => ({ act: s.act, sections: s.sections, visual_en: s.visual_en })) }, null, 1)}
@@ -175,25 +249,22 @@ ${fixed}
 Shots (cut points are FIXED on the beat; do not change the count or timing):
 ${shotLines}
 
-Rules (mixed method):
-- NORMAL shots: 1 to ${NORMAL_MAX} drawings, held long (each exposure 3 frames or more, usually 8-48), and the camera moves over the drawing (pan / zoom / truck). Few drawings + a good camera move = calm, cinematic.
-- HIGHLIGHT shots (marked HIGHLIGHT: chorus, high-energy bars): ${HIGHLIGHT_MIN} to ${HIGHLIGHT_MAX} drawings "on 2s" (every exposure 2 frames) for fluid action. Use cycles: e.g. A,B,C,B repeating for running, dancing, hair or cloth in the wind.
-- Budget: at most ${budget} unique drawings for the WHOLE video (it protects the subscription usage limit). Follow "suggested drawings" per shot. Reuse drawings with cycles instead of drawing more.
+${method}
+- Budget: at most ${budget} unique images for the WHOLE video${layers ? ' (backgrounds + character cels)' : ''}. It protects the subscription usage limit. Reuse drawings with cycles instead of drawing more.
 - The exposure frames of each shot MUST add up exactly to that shot's frame count.
-- Change drawings on the listed beat frames where you can (changes on the beat feel musical).
-- scene_en: the shared background, place, time of day, lighting of the shot (all drawings of a shot share it). framing_en: shot size and angle (e.g. "wide shot, low angle").
+- Change drawings on the listed beat frames where you can (changes on the beat feel musical).${layerRules}
+- scene_en: the place, time of day and lighting of the shot. framing_en: shot size and angle (e.g. "wide shot, low angle").
 - Each drawing's prompt_en: one or two English sentences about only what this drawing shows (pose, action, expression, eyes/mouth, hair and cloth motion). Use the characters' exact names.
-- camera.move: one of ${CAMERA_MOVES.join(', ')}. start/end framing: zoom 1.0-${ZOOM_MAX} (1.0 = the whole drawing), x and y from -1 to 1 = where the view sits inside the drawing (-1 = left/top edge, 1 = right/bottom edge). Pans need zoom 1.2 or more. ease: linear, in, out or inout.
+- camera.move: one of ${CAMERA_MOVES.join(', ')}. start/end framing: zoom 1.0-${ZOOM_MAX} (1.0 = the whole drawing), x and y from -1 to 1 = where the view sits inside the drawing (-1 = left/top edge, 1 = right/bottom edge). Pans need zoom 1.2 or more. ease: linear, in, out or inout.${layers ? ' The background moves a little slower than the characters (multiplane depth).' : ''}
 - fx (optional, per shot): any of ${FX_TYPES.join(', ')}.
 - transition_out: from this shot into the next. type: ${Object.keys(TRANSITIONS).join(', ')}. beats: 0 for cut, otherwise 0.5, 1 or 2. ${trStyle}
-- Cycle shorthand inside "exposure" is allowed: {"cycle": ["A","B","C","B"], "each": 2, "repeat": 6}.
 - Original content only. No text, letters or speech bubbles in drawings.
 - Extra instructions from the user: ${wf.extraInstructions || '(none)'}
 
 Return ONLY this JSON shape with exactly ${segments.length} shots (the "exposure" list is required):
-{"shots": [{"shot": 1, "highlight": false, "characters": ["Name"], "scene_en": "...", "framing_en": "wide shot, eye level",
-  "drawings": [{"id": "A", "prompt_en": "..."}, {"id": "B", "prompt_en": "..."}],
-  "exposure": [{"drawing": "A", "frames": 36}, {"drawing": "B", "frames": 24}],
+{"shots": [{"shot": 1, "motion": ${mode === 'limited' ? 'false' : 'true'}, "highlight": false, "characters": ["Name"], "scene_en": "...", "framing_en": "medium shot, eye level",${layers ? '\n  "bg": {"prompt_en": "the place only, no characters"},' : ''}
+  "drawings": [{"id": "A", "prompt_en": "..."}, {"id": "B", "prompt_en": "... (a small change from A)"}],
+  "exposure": [{"drawing": "A", "frames": ${mode === 'limited' ? 36 : unit}}, {"drawing": "B", "frames": ${mode === 'limited' ? 24 : unit}}],
   "camera": {"move": "pan_left", "start": {"zoom": 1.25, "x": 0.8, "y": 0}, "end": {"zoom": 1.25, "x": -0.8, "y": 0}, "ease": "inout"},
   "fx": [], "transition_out": {"type": "cut", "beats": 0}}]}`;
 }
@@ -209,7 +280,7 @@ const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 function letter(i) { return i < 26 ? LETTERS[i] : `${LETTERS[Math.floor(i / 26) - 1]}${LETTERS[i % 26]}`; }
 
 /** 그림 목록 정리: id 를 A, B, C… 로 다시 붙이고 예전 id → 새 id 표를 돌려준다 */
-function cleanDrawings(raw, notes, shotNo) {
+function cleanDrawings(raw, notes, shotNo, cap = HIGHLIGHT_MAX) {
   const list = Array.isArray(raw) ? raw : [];
   const out = [];
   const map = new Map();
@@ -222,7 +293,7 @@ function cleanDrawings(raw, notes, shotNo) {
       oldId = d.id != null ? d.id : d.name != null ? d.name : d.label != null ? d.label : letter(i);
     } else return;
     if (!prompt) { prompt = 'same scene, small change of pose and expression'; notes.push(`컷 ${shotNo}: 설명 없는 그림에 기본 설명을 붙였어요`); }
-    if (out.length >= HIGHLIGHT_MAX) return;
+    if (out.length >= cap) return;
     const id = letter(out.length);
     const k = String(oldId).trim().toUpperCase();
     if (!map.has(k)) map.set(k, id);
@@ -232,7 +303,7 @@ function cleanDrawings(raw, notes, shotNo) {
 }
 
 /** 노출(exposure) 목록 읽기: 여러 모양을 받아 준다 ({drawing,frames}, "A:12", ["A",12], {cycle:[...]}, seconds) */
-function parseExposure(raw, map, drawings, highlight, notes, shotNo) {
+function parseExposure(raw, map, drawings, defFrames, notes, shotNo) {
   const list = Array.isArray(raw) ? raw : [];
   const out = [];
   const resolve = (id) => {
@@ -248,7 +319,6 @@ function parseExposure(raw, map, drawings, highlight, notes, shotNo) {
     }
     return null;
   };
-  const defFrames = highlight ? 2 : 12;
   const framesOf = (o) => {
     if (o.frames != null || o.f != null || o.duration_frames != null) return Math.round(num(o.frames ?? o.f ?? o.duration_frames, defFrames));
     if (o.seconds != null || o.sec != null || o.duration != null) return Math.round(num(o.seconds ?? o.sec ?? o.duration, defFrames / FPS) * FPS);
@@ -454,11 +524,92 @@ const HIGHLIGHT_POSES = [
   'spinning, skirt or coat flaring', 'final joyful pose',
 ];
 
+/**
+ * 움직이는 컷의 노출: 열쇠 그림마다 정확히 unit(4·3) 프레임 (같은 그림을 두 칸 이어서 쓰지 않는다).
+ * 칸이 모자라면 반복(사이클) 또는 왕복(A-B-C-B-A…)으로 채우고, 남으면 자른다. 남는 1~3프레임은 마지막 그림이 가져간다.
+ */
+function motionExposure(exp, N, unit) {
+  if (!exp.length) return [];
+  const T = Math.floor(N / unit);
+  if (T < 1) return [{ drawing: exp[0].drawing, frames: N }];
+  const slots = [];
+  for (const e of exp) if (slots[slots.length - 1] !== e.drawing) slots.push(e.drawing);
+  const isCycle = exp.some((e) => e.cycle) || (slots.length > 2 && slots[0] === slots[slots.length - 1]);
+  let ring = slots;
+  if (isCycle && slots.length > 1 && slots[0] === slots[slots.length - 1]) ring = slots.slice(0, -1);
+  else if (!isCycle && slots.length > 1) ring = [...slots, ...slots.slice(1, -1).reverse()];
+  const seq = slots.length >= T ? slots.slice(0, T) : Array.from({ length: T }, (_, k) => (k < slots.length ? slots[k] : ring[k % ring.length]));
+  const out = mergeRuns(seq.map((d) => ({ drawing: d, frames: unit })));
+  out[out.length - 1].frames += N - T * unit;
+  return out;
+}
+
+/** 움직이는 컷의 열쇠 그림을 k 장으로 줄이기 (고르게 골라서 왕복으로 돌려 쓴다) */
+function reduceMotionKeys(shot, k, N, unit) {
+  const order = [];
+  for (const e of shot.exposure) if (!order.includes(e.drawing)) order.push(e.drawing);
+  if (k >= order.length) return;
+  const keep = k <= 1 ? [order[0]] : Array.from({ length: k }, (_, j) => order[Math.round((j * (order.length - 1)) / (k - 1))]);
+  shot.drawings = shot.drawings.filter((d) => keep.includes(d.id));
+  shot.exposure = motionExposure(keep.map((d) => ({ drawing: d, frames: unit })), N, unit);
+}
+
+/** 움직이는 컷을 멈춤 컷으로 (예산이 모자랄 때): 첫 그림 하나를 길게 + 천천히 다가가기 */
+function demoteToHold(shot, N) {
+  shot.motion = false;
+  shot.drawings = shot.drawings.slice(0, 1);
+  shot.exposure = [{ drawing: shot.drawings[0].id, frames: N }];
+  if (shot.camera.move === 'hold') shot.camera = normalizeCamera({ move: 'zoom_in' }, shot.fx);
+}
+
+/** 예산 맞추기 (움직임 방식): 멈춤 컷 2장 → 움직임 열쇠 6장 → 멈춤 1장 → 움직임 4장 → 덜 중요한 움직임 컷부터 멈춤으로 */
+function fitMotionBudget(shots, frames, cap, unit, prio) {
+  const c = shots.map((s) => s.drawings.length);
+  let total = sum(c);
+  const before = total;
+  if (total <= cap) return 0;
+  const reduce = (ok, floor) => {
+    while (total > cap) {
+      let best = -1;
+      for (let i = 0; i < c.length; i++) if (ok(i) && c[i] > floor && (best < 0 || c[i] > c[best])) best = i;
+      if (best < 0) break;
+      c[best]--;
+      total--;
+    }
+  };
+  const isM = (i) => shots[i].motion;
+  reduce((i) => !isM(i), 2);
+  reduce(isM, 6);
+  reduce((i) => !isM(i), 1);
+  reduce(isM, 4);
+  const demoted = new Set();
+  for (const i of shots.map((_, k) => k).filter(isM).sort((a, b) => prio[a] - prio[b])) {
+    if (total <= cap) break;
+    total -= c[i] - 1;
+    c[i] = 1;
+    demoted.add(i);
+  }
+  shots.forEach((s, i) => {
+    if (s.motion && (demoted.has(i) || c[i] < 2)) { demoteToHold(s, frames[i]); return; }
+    if (s.motion) { reduceMotionKeys(s, c[i], frames[i], unit); return; }
+    let guard = 50;
+    while (s.drawings.length > c[i] && guard-- > 0) if (!dropDrawing(s, frames[i], false)) break;
+  });
+  return before - sum(shots.map((s) => s.drawings.length));
+}
+
+const MOTION_STEPS = [
+  'start of the movement', 'a little further into the same movement', 'further along, weight shifting', 'near the peak of the movement',
+  'at the peak, hair and clothes swinging', 'coming back a little', 'further back, follow-through', 'almost back to the start',
+];
+
 /** LLM 결과가 없거나 망가진 컷을 PC 가 대신 짠다 */
 function fallbackShot(seg, i, ctx) {
   const N = ctx.frames[i];
-  const hl = ctx.highlights[i];
-  const n = Math.max(1, (ctx.alloc && ctx.alloc[i]) || idealCount(N, hl));
+  const mode = normMode(ctx.mode);
+  if (mode !== 'limited' && ctx.motion && ctx.motion[i]) return fallbackMotionShot(seg, i, ctx);
+  const hl = mode === 'limited' && ctx.highlights[i];
+  const n = Math.max(1, (mode === 'limited' && ctx.alloc && ctx.alloc[i]) || idealCount(N, hl));
   const act = actFor(ctx.plan, i, ctx.segments.length);
   const who = ((ctx.plan && ctx.plan.characters) || []).filter((c) => c.role !== 'guest').map((c) => c.name).slice(0, 2);
   const subject = who.length ? who.join(' and ') : 'the main character';
@@ -480,6 +631,33 @@ function fallbackShot(seg, i, ctx) {
     camera: normalizeCamera({ move: hl ? (i % 2 ? 'zoom_in' : 'truck_in') : FALLBACK_MOVES[i % FALLBACK_MOVES.length] }),
     fx: i === 0 ? ['fade_in'] : i === ctx.segments.length - 1 ? ['fade_out'] : hl && i % 2 ? ['sparkle'] : [],
     transition_out: { type: i % 4 === 3 ? 'dissolve' : 'cut', beats: i % 4 === 3 ? 1 : 0 },
+    motion: false,
+    bg: ctx.layers ? { prompt_en: str(act.visual_en, 400) } : null,
+    source: 'fallback',
+  };
+}
+
+/** PC 가 대신 짜는 움직이는 컷: 열쇠 그림 최대 8장을 작은 단계로 나눠 사이클로 */
+function fallbackMotionShot(seg, i, ctx) {
+  const N = ctx.frames[i];
+  const unit = keyFrames(ctx.keyRate);
+  const act = actFor(ctx.plan, i, ctx.segments.length);
+  const who = ((ctx.plan && ctx.plan.characters) || []).filter((c) => c.role !== 'guest').map((c) => c.name).slice(0, 2);
+  const subject = who.length ? who.join(' and ') : 'the main character';
+  const k = Math.max(2, Math.min(8, motionSlots(N, ctx.keyRate)));
+  const drawings = Array.from({ length: k }, (_, j) => ({ id: letter(j), prompt_en: `${subject} moving (${act.visual_en}): ${MOTION_STEPS[Math.round((j * (MOTION_STEPS.length - 1)) / Math.max(1, k - 1))]}` }));
+  return {
+    highlight: !!ctx.highlights[i],
+    characters: who,
+    scene_en: str(act.visual_en, 400),
+    framing_en: 'medium shot, eye level',
+    drawings,
+    exposure: motionExposure(drawings.map((d) => ({ drawing: d.id, frames: unit, cycle: true })), N, unit),
+    camera: normalizeCamera({ move: i % 2 ? 'truck_in' : 'pan_right' }),
+    fx: i === 0 ? ['fade_in'] : i === ctx.segments.length - 1 ? ['fade_out'] : [],
+    transition_out: { type: 'cut', beats: 0 },
+    motion: true,
+    bg: ctx.layers ? { prompt_en: str(act.visual_en, 400) } : null,
     source: 'fallback',
   };
 }
@@ -536,15 +714,21 @@ function addInbetweens(shot, want, N) {
  * LLM 이 짠 타임시트를 검사하고 고친다.
  * @param {any} raw LLM 결과 (망가졌거나 비어 있어도 됨)
  * @param {{segments:object[], frames:number[], highlights:boolean[], alloc?:number[], budget:number, plan:object,
- *          analysis:object, transitionStyle?:string}} ctx
- * @returns {{fps:number, budget:number, totalFrames:number, totalDrawings:number, notes:string[], shots:object[], transitions:object[]}}
+ *          analysis:object, mode?:string, keyRate?:number, motion?:boolean[], layers?:boolean}} ctx
+ * @returns {{fps:number, budget:number, mode:string, keyRate:number, layers:boolean, totalFrames:number, totalDrawings:number,
+ *            notes:string[], shots:object[], transitions:object[], estimate:object}}
  */
 function normalizeXsheet(raw, ctx) {
   const { segments, frames, budget } = ctx;
+  const mode = normMode(ctx.mode);
+  const keyRate = Number(ctx.keyRate) === 8 ? 8 : 6;
+  const unit = keyFrames(keyRate);
+  const layers = !!ctx.layers;
+  const pcMotion = ctx.motion || segments.map(() => mode === 'full');
   const notes = [];
   const starts = startFrames(segments);
   const beats = segments.map((s, i) => beatFramesIn(s, ctx.analysis || { beats: [] }, starts[i]));
-  const c2 = { ...ctx, beats };
+  const c2 = { ...ctx, beats, mode, keyRate, layers, motion: pcMotion };
   const rawShots = Array.isArray(raw) ? raw : raw && Array.isArray(raw.shots) ? raw.shots : [];
   if (!rawShots.length) notes.push('AI 타임시트가 비어 있어서 PC 가 기본 타임시트를 짰어요');
   const byNo = new Map();
@@ -559,24 +743,31 @@ function normalizeXsheet(raw, ctx) {
       return fallbackShot(seg, i, c2);
     }
     const hl = llmFlags && typeof src.highlight === 'boolean' ? src.highlight : ctx.highlights[i];
-    let { drawings, map } = cleanDrawings(src.drawings || src.cels || src.keys, notes, seg.index);
-    let exposure = drawings.length ? parseExposure(src.exposure || src.exposures || src.timing || src.sheet, map, drawings, hl, notes, seg.index) : [];
+    const motion = mode === 'full' ? true : mode === 'limited' ? false : typeof src.motion === 'boolean' ? src.motion : !!pcMotion[i];
+    const twos = mode === 'limited' && hl; // 리미티드의 하이라이트: 2프레임씩
+    const cap = motion ? Math.max(HIGHLIGHT_MAX, motionSlots(N, keyRate)) : HIGHLIGHT_MAX;
+    const { drawings, map } = cleanDrawings(src.drawings || src.cels || src.keys, notes, seg.index, cap);
+    let exposure = drawings.length ? parseExposure(src.exposure || src.exposures || src.timing || src.sheet, map, drawings, motion ? unit : twos ? 2 : 12, notes, seg.index) : [];
     if (!drawings.length) {
       notes.push(`컷 ${seg.index}: 그림 목록이 없어서 PC 가 대신 짰어요`);
-      return fallbackShot(seg, i, c2);
+      return fallbackShot(seg, i, { ...c2, motion: pcMotion.map((m, k) => (k === i ? motion : m)) });
     }
     if (!exposure.length) {
       notes.push(`컷 ${seg.index}: 노출표가 없어서 PC 가 만들었어요`);
-      exposure = hl ? cycleExposure(drawings.map((d) => d.id), N) : holdExposure(drawings.map((d) => d.id), N, beats[i]);
+      const ids = drawings.map((d) => d.id);
+      exposure = motion ? ids.map((d) => ({ drawing: d, frames: unit, cycle: true })) : twos ? cycleExposure(ids, N) : holdExposure(ids, N, beats[i]);
     }
-    // 보통 컷은 4장까지
-    if (!hl && drawings.length > NORMAL_MAX) notes.push(`컷 ${seg.index}: 보통 컷이라 그림을 ${NORMAL_MAX}장으로 줄였어요`);
+    if (!motion && !twos && drawings.length > NORMAL_MAX) notes.push(`컷 ${seg.index}: 멈춤 컷이라 그림을 ${NORMAL_MAX}장으로 줄였어요`);
     const fx = normalizeFx(src.fx || src.effects);
+    const scene = str(src.scene_en || src.scene || src.setting, 600) || str(actFor(ctx.plan, i, segments.length).visual_en, 400);
+    const bgSrc = src.bg || src.background_plate || src.background;
     const shot = {
       highlight: !!hl,
+      motion,
       characters: (Array.isArray(src.characters) ? src.characters : []).map((x) => str(typeof x === 'object' && x ? x.name : x, 60)).filter(Boolean).slice(0, 4),
-      scene_en: str(src.scene_en || src.scene || src.background || src.setting, 600) || str(actFor(ctx.plan, i, segments.length).visual_en, 400),
+      scene_en: scene,
       framing_en: str(src.framing_en || src.framing || src.shot_size, 120),
+      bg: layers ? { prompt_en: str(typeof bgSrc === 'string' ? bgSrc : bgSrc && (bgSrc.prompt_en || bgSrc.prompt), 600) || scene } : null,
       drawings,
       exposure,
       camera: normalizeCamera(src.camera || src.camera_move || src.move, fx),
@@ -584,6 +775,8 @@ function normalizeXsheet(raw, ctx) {
       transition_out: src.transition_out && typeof src.transition_out === 'object' ? { type: str(src.transition_out.type, 20) || 'cut', beats: num(src.transition_out.beats, 0) } : { type: 'cut', beats: 0 },
       source: 'llm',
     };
+    if (motion) shot.exposure = motionExposure(shot.exposure, N, unit);
+    else shot.exposure = fitExposure(mergeRuns(shot.exposure), N, twos ? { unit: 2, min: 2 } : { unit: 1, min: 2 });
     // 쓰이지 않는 그림은 뺀다 (예산 낭비)
     const usedIds = new Set(shot.exposure.map((e) => e.drawing));
     const unused = shot.drawings.filter((d) => !usedIds.has(d.id));
@@ -591,37 +784,50 @@ function normalizeXsheet(raw, ctx) {
       shot.drawings = shot.drawings.filter((d) => usedIds.has(d.id));
       notes.push(`컷 ${seg.index}: 노출표에 없는 그림 ${unused.map((d) => d.id).join(',')} 는 그리지 않아요`);
     }
-    shot.exposure = fitExposure(mergeRuns(shot.exposure), N, hl ? { unit: 2, min: 2 } : { unit: 1, min: 2 });
-    while (!hl && shot.drawings.length > NORMAL_MAX) dropDrawing(shot, N, hl);
+    while (!motion && !twos && shot.drawings.length > NORMAL_MAX) dropDrawing(shot, N, false);
     return shot;
   });
 
-  // ---- 예산: 하이라이트는 사이 그림으로 6장까지 채우고, 넘치면 보통 컷부터 줄인다 ----
-  const hlFlags = shots.map((s) => s.highlight);
-  const have = shots.map((s) => s.drawings.length);
-  const desired = shots.map((s, i) => (s.highlight ? Math.max(have[i], Math.min(HIGHLIGHT_MIN, Math.floor(frames[i] / 2))) : have[i]));
-  const target = fitCountsToBudget(desired, hlFlags, budget);
-  shots.forEach((s, i) => {
-    if (target[i] > have[i]) {
-      addInbetweens(s, target[i], frames[i]);
-      notes.push(`컷 ${segments[i].index}: 하이라이트라서 사이 그림을 더해 ${target[i]}장으로 만들었어요`);
-      return;
+  // ---- 예산 ----
+  const bgCount = layers ? shots.length : 0;
+  const celBudget = Math.max(shots.length, budget - bgCount);
+  if (mode === 'limited') {
+    // 하이라이트는 사이 그림으로 6장까지 채우고, 넘치면 보통 컷부터 줄인다
+    const hlFlags = shots.map((s) => s.highlight);
+    const have = shots.map((s) => s.drawings.length);
+    const desired = shots.map((s, i) => (s.highlight ? Math.max(have[i], Math.min(HIGHLIGHT_MIN, Math.floor(frames[i] / 2))) : have[i]));
+    const target = fitCountsToBudget(desired, hlFlags, celBudget);
+    shots.forEach((s, i) => {
+      if (target[i] > have[i]) {
+        addInbetweens(s, target[i], frames[i]);
+        notes.push(`컷 ${segments[i].index}: 하이라이트라서 사이 그림을 더해 ${target[i]}장으로 만들었어요`);
+        return;
+      }
+      let guard = 50;
+      while (s.drawings.length > target[i] && guard-- > 0) if (!dropDrawing(s, frames[i], s.highlight)) break;
+    });
+    const after = sum(shots.map((s) => s.drawings.length));
+    if (sum(desired) > after) notes.push(`그림 장수 예산(${budget}장)에 맞추려고 ${sum(desired) - after}장을 줄였어요`);
+  } else {
+    const prio = shots.map((s, i) => (s.highlight ? 2 : 0) + (typeof segments[i].level === 'number' ? segments[i].level : 0.5));
+    const motionBefore = shots.filter((s) => s.motion).length;
+    const cut = fitMotionBudget(shots, frames, celBudget, unit, prio);
+    if (cut > 0) {
+      const demoted = motionBefore - shots.filter((s) => s.motion).length;
+      notes.push(`그림 장수 예산(${budget}장)에 맞추려고 ${cut}장을 줄였어요${demoted ? ` (움직이는 컷 ${demoted}개는 멈춤 그림 + 카메라로)` : ''}`);
     }
-    let guard = 50;
-    while (s.drawings.length > target[i] && guard-- > 0) if (!dropDrawing(s, frames[i], s.highlight)) break;
-  });
-  const after = sum(shots.map((s) => s.drawings.length));
-  if (sum(desired) > after) notes.push(`그림 장수 예산(${budget}장)에 맞추려고 ${sum(desired) - after}장을 줄였어요`);
+  }
 
   // ---- 마무리: 박자 맞추기, 정지 화면 방지, 프레임 합계 최종 확인 ----
   shots = shots.map((s, i) => {
     const N = frames[i];
-    if (!s.highlight && s.source === 'llm') s.exposure = snapToBeats(s.exposure, beats[i], { min: 3, reach: 3 });
-    if (!s.highlight && s.drawings.length === 1 && s.camera.move === 'hold' && N > 72 && !s.fx.includes('shake')) {
+    const twos = mode === 'limited' && s.highlight;
+    if (!s.motion && !twos && s.source === 'llm') s.exposure = snapToBeats(s.exposure, beats[i], { min: 3, reach: 3 });
+    if (!s.motion && !twos && s.drawings.length === 1 && s.camera.move === 'hold' && N > 72 && !s.fx.includes('shake')) {
       // 그림 한 장을 3초 넘게 가만히 두면 멈춘 것처럼 보인다 → 아주 천천히 다가가기
       s.camera = { move: 'zoom_in', start: { zoom: 1.02, x: 0, y: 0 }, end: { zoom: 1.1, x: 0, y: -0.05 }, ease: 'inout' };
     }
-    if (sum(s.exposure.map((e) => e.frames)) !== N) s.exposure = fitExposure(s.exposure, N, { unit: 1, min: 1 });
+    if (sum(s.exposure.map((e) => e.frames)) !== N) s.exposure = s.motion ? motionExposure(s.exposure, N, unit) : fitExposure(s.exposure, N, { unit: 1, min: 1 });
     return {
       shot: segments[i].index,
       start: segments[i].start,
@@ -645,15 +851,80 @@ function normalizeXsheet(raw, ctx) {
     if (fr < 2) return { type: 'cut', xfade: null, duration: 0, frames: 0 };
     return { ...t, frames: fr, duration: Math.round((fr / FPS) * 1000) / 1000 };
   });
-  return {
+  const xs = {
     fps: FPS,
     budget,
+    mode,
+    keyRate,
+    layers,
     totalFrames: sum(frames),
-    totalDrawings: sum(shots.map((s) => s.drawings.length)),
+    totalDrawings: sum(shots.map((s) => s.drawings.length)) + bgCount,
     notes: [...new Set(notes)],
     shots,
     transitions,
   };
+  xs.estimate = estimateWork(xs);
+  return xs;
+}
+
+// ---------------- 사이 그림 · 예상 ----------------
+
+/** 사이 그림 짝 이름 (A~B 와 B~A 는 같은 그림) */
+function pairKey(a, b) { return a < b ? `${a}~${b}` : `${b}~${a}`; }
+
+/** 움직이는 컷에서 이웃한 서로 다른 열쇠 그림 짝 (겹치지 않게) */
+function motionPairs(shot) {
+  if (!shot.motion) return [];
+  const out = [];
+  shot.exposure.forEach((e, i) => {
+    const nx = shot.exposure[i + 1];
+    if (nx && nx.drawing !== e.drawing && e.frames >= 2) {
+      const k = pairKey(e.drawing, nx.drawing);
+      if (!out.includes(k)) out.push(k);
+    }
+  });
+  return out;
+}
+
+/**
+ * 프레임마다 보이는 그림 (사이 그림 포함). 움직이는 컷에서 사이 그림이 있으면
+ * A 를 ceil(n/2) 프레임, 그다음 A~B 를 floor(n/2) 프레임. 없으면(너무 다르거나 끄기) A 를 그대로 n 프레임.
+ * @param {(a:string,b:string)=>boolean} [has] 사이 그림이 있는지
+ */
+function expandExposure(shot, has = () => false) {
+  const out = [];
+  shot.exposure.forEach((e, i) => {
+    const nx = shot.exposure[i + 1];
+    if (shot.motion && nx && nx.drawing !== e.drawing && e.frames >= 2 && has(e.drawing, nx.drawing)) {
+      const a = Math.ceil(e.frames / 2);
+      for (let k = 0; k < a; k++) out.push(e.drawing);
+      for (let k = a; k < e.frames; k++) out.push(pairKey(e.drawing, nx.drawing));
+    } else {
+      for (let k = 0; k < e.frames; k++) out.push(e.drawing);
+    }
+  });
+  return out;
+}
+
+/** 그릴 그림 장수와 걸릴 시간 예상 (그림 한 장에 약 30초) */
+function estimateWork(xs, { secPerImage = 30 } = {}) {
+  const bg = xs.shots.filter((s) => s.bg).length;
+  const cels = sum(xs.shots.map((s) => s.drawings.length));
+  const inbetweens = sum(xs.shots.map((s) => motionPairs(s).length));
+  const motionShots = xs.shots.filter((s) => s.motion);
+  const images = bg + cels;
+  return {
+    images, bg, cels, inbetweens, secPerImage,
+    minutes: Math.ceil((images * secPerImage) / 60),
+    motionShots: motionShots.length,
+    motionSeconds: Math.round((sum(motionShots.map((s) => s.frames)) / FPS) * 10) / 10,
+  };
+}
+
+/** 예상을 한국어 한 줄로 */
+function estimateText(e) {
+  const time = e.minutes >= 60 ? `약 ${(e.minutes / 60).toFixed(1)}시간` : `약 ${Math.max(1, e.minutes)}분`;
+  return `그림 약 ${e.images}장 (배경 ${e.bg}장 + 인물 ${e.cels}장), 예상 ${time} (그림 한 장에 ${e.secPerImage}초쯤)${e.inbetweens ? ` · 사이 그림 약 ${e.inbetweens}장은 내 PC 가 만들어요` : ''}`;
 }
 
 /**
@@ -682,8 +953,10 @@ function frameTable(shot) {
 }
 
 module.exports = {
-  FPS, CAMERA_MOVES, CAMERA_PRESETS, FX_TYPES, NORMAL_MAX, HIGHLIGHT_MIN, HIGHLIGHT_MAX,
+  FPS, MODES, CAMERA_MOVES, CAMERA_PRESETS, FX_TYPES, NORMAL_MAX, HIGHLIGHT_MIN, HIGHLIGHT_MAX, MOTION_SHARE,
   shotFrames, markHighlights, autoBudget, resolveBudget, idealCount, fitCountsToBudget, allocateDrawings, beatFramesIn,
+  keyFrames, motionSlots, assignMotion, motionExposure, reduceMotionKeys, fitMotionBudget,
   xsheetPrompt, validXsheet, normalizeXsheet, fitExposure, snapToBeats, normalizeCamera, normalizeFx, cameraAt, easeP,
   fallbackShot, retimeExposure, frameTable, cycleExposure, holdExposure,
+  pairKey, motionPairs, expandExposure, estimateWork, estimateText,
 };
