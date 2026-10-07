@@ -97,3 +97,60 @@ test('render: clean master has exact frames (±1), right duration and the song; 
   await burnSubtitles({ video: clean, total: xs.totalFrames / 24, w, h, subtitlePngs: [{ file: png, start: 1, end: 3, y: h - 80 }, { file: png, start: 5, end: 7.5, y: h - 80 }], out: final2 });
   assert.ok(Math.abs((await countFrames(final2)) - xs.totalFrames) <= 1, 'PNG subtitles keep the length');
 });
+
+test('layered render: BG plate + transparent cels (+ in-between ids), exact length, background moves 0.8× the cels (multiplane)', { timeout: 300000 }, async () => {
+  const K = require('../src/main/media/keyer');
+  const { runFfmpeg } = require('../src/main/media/ffmpeg');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'am2-layer-'));
+  const BW = 480;
+  const BH = 270;
+  // 배경: 회색 + 가운데 빨간 세로줄
+  const bgPx = new Uint8ClampedArray(BW * BH * 3);
+  for (let i = 0; i < BW * BH; i++) { const x = i % BW; bgPx.set(Math.abs(x - BW / 2) < 3 ? [230, 20, 20] : [120, 120, 120], i * 3); }
+  const bg = await K.writePng(path.join(dir, 'bg.png'), bgPx, BW, BH, { rgb: true });
+  // 셀: 투명(색 값은 배경을 뺀 초록 그대로) + 파란 상자 (B 는 조금 위로)
+  const cel = async (name, dy) => {
+    const px = new Uint8ClampedArray(BW * BH * 4);
+    for (let i = 0; i < BW * BH; i++) { const x = i % BW; const y = Math.floor(i / BW); px.set(Math.abs(x - BW / 2) < 15 && Math.abs(y - BH / 2 - dy) < 30 ? [20, 40, 230, 255] : [0, 255, 0, 0], i * 4); }
+    return K.writePng(path.join(dir, `${name}.png`), px, BW, BH);
+  };
+  const layers = new Map([['A', await cel('A', 0)], ['B', await cel('B', -10)], ['A~B', await cel('AB', -5)]]);
+  const shot = {
+    shot: 1, frames: 24, motion: true, fx: [],
+    exposure: [{ drawing: 'A', frames: 4 }, { drawing: 'B', frames: 4 }, { drawing: 'A', frames: 16 }],
+    camera: { move: 'pan_left', start: { zoom: 1.5, x: 0.8, y: 0 }, end: { zoom: 1.5, x: -0.8, y: 0 }, ease: 'linear' },
+  };
+  const table = X.expandExposure(shot, () => true);
+  assert.deepStrictEqual(table.slice(0, 8), ['A', 'A', 'A~B', 'A~B', 'B', 'B', 'A~B', 'A~B']);
+  const W = 320;
+  const H = 180;
+  const out = path.join(dir, 'shot.mp4');
+  const r = await renderShot({ shot, table, bg, layers, parallax: 0.8, W, H, lead: 2, tail: 3, boil: false, out });
+  assert.ok(r.layered);
+  assert.strictEqual(r.frames, 29);
+  assert.strictEqual(await countFrames(out), 29, 'lead + 24 + tail frames exactly');
+  await assert.rejects(renderShot({ shot, table: table.slice(1), bg, layers, W, H, out: path.join(dir, 'bad.mp4') }), /프레임 합계/);
+  // 첫 프레임과 마지막 프레임에서 빨간 줄(배경)과 파란 상자(인물)의 위치
+  const where = async (n) => {
+    const png = path.join(dir, `f${n}.png`);
+    await runFfmpeg(['-y', '-i', out, '-vf', `select=eq(n\\,${n})`, '-frames:v', '1', png]);
+    const img = await K.readRgba(png);
+    let rx = 0; let rn = 0; let bx = 0; let bn = 0; let green = 0;
+    for (let i = 0; i < W * H; i++) {
+      const [R, G, B] = [img.data[i * 4], img.data[i * 4 + 1], img.data[i * 4 + 2]];
+      if (G > R + 40 && G > B + 40) green++;
+      if (R > 180 && G < 80 && B < 80) { rx += i % W; rn++; }
+      if (B > 180 && R < 80) { bx += i % W; bn++; }
+    }
+    const grey = img.data.slice(4 * (5 * W + 5), 4 * (5 * W + 5) + 3);
+    return { red: rx / rn, blue: bx / bn, grey: Array.from(grey), green };
+  };
+  const a = await where(2);
+  const b = await where(26);
+  assert.strictEqual(a.green + b.green, 0, 'no key-colour fringe around the cel');
+  assert.ok(a.grey.every((v) => Math.abs(v - 120) < 12), `background shows through the transparent cel ${a.grey}`);
+  const celMove = b.blue - a.blue;
+  const bgMove = b.red - a.red;
+  assert.ok(celMove > 40, `camera pans (cel moved ${celMove.toFixed(1)}px)`);
+  assert.ok(Math.abs(bgMove / celMove - 0.8) < 0.06, `parallax ${(bgMove / celMove).toFixed(3)} (bg ${bgMove.toFixed(1)} / cel ${celMove.toFixed(1)})`);
+});
