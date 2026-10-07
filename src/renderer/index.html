@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta http-equiv="Content-Security-Policy"
         content="default-src 'self' file:; img-src 'self' file: data: blob:; media-src 'self' file: blob:; style-src 'self' 'unsafe-inline' file:; script-src 'self' file:; connect-src 'self' file:">
-  <title>AnimeMaker - AI 뮤직비디오 자동 제작기</title>
+  <title>AnimeMaker V2 - 셀 애니메이션 뮤직비디오 제작기</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -13,12 +13,14 @@
       <div class="brand">
         <img src="assets/icon.png" alt="">
         <div>
-          <div class="brand-name">AnimeMaker</div>
-          <div class="brand-sub">AI 뮤직비디오 자동 제작기</div>
+          <div class="brand-name">AnimeMaker <span class="v2">V2</span></div>
+          <div class="brand-sub">손그림 애니 뮤직비디오</div>
         </div>
       </div>
       <nav id="nav">
-        <button data-view="home" class="nav-item"><span class="ico">🎬</span>새 영상 만들기</button>
+        <button data-view="home" class="nav-item"><span class="ico">🎬</span>새 에피소드 만들기</button>
+        <button data-view="series" class="nav-item"><span class="ico">📺</span>시리즈</button>
+        <button data-view="characters" class="nav-item"><span class="ico">🧒</span>캐릭터</button>
         <button data-view="projects" class="nav-item"><span class="ico">📂</span>내 작업</button>
         <button data-view="workflows" class="nav-item"><span class="ico">🧩</span>워크플로우</button>
         <button data-view="settings" class="nav-item"><span class="ico">🔌</span>AI 연결 설정</button>
@@ -35,6 +37,8 @@
   <div id="toast-root"></div>
   <script src="js/ui.js"></script>
   <script src="js/home.js"></script>
+  <script src="js/characters.js"></script>
+  <script src="js/series.js"></script>
   <script src="js/project.js"></script>
   <script src="js/projects.js"></script>
   <script src="js/workflows.js"></script>

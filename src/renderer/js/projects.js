@@ -9,10 +9,10 @@
     if (!list.length) {
       return h('div', null,
         h('h1', { class: 'page-title' }, '📂 내 작업'),
-        h('p', { class: 'page-sub' }, '만든 뮤직비디오가 여기에 모여요.'),
+        h('p', { class: 'page-sub' }, '만든 에피소드가 여기에 모여요.'),
         h('div', { class: 'section', style: { textAlign: 'center' } },
           h('p', null, '아직 만든 작업이 없어요.'),
-          h('button', { class: 'btn primary', onclick: () => AM.go('home') }, '🎬 첫 영상 만들기')));
+          h('button', { class: 'btn primary', onclick: () => AM.go('home') }, '🎬 첫 에피소드 만들기')));
     }
     return h('div', null,
       h('div', { class: 'row' },
@@ -25,6 +25,7 @@
           h('div', { class: 'pt', style: p.thumb ? { backgroundImage: `url("${AM.fileUrl(p.thumb)}")` } : null },
             h('span', { class: `status-pill st-${status}`, style: { position: 'absolute', top: '8px', left: '8px' } }, AM.STATUS_LABEL[status] || status)),
           h('div', { class: 'pb' },
+            p.series ? h('div', { class: 'small', style: { color: 'var(--primary)', fontWeight: 700 } }, `${p.series.emoji || '📺'} ${p.series.name} EP${p.series.episode}`) : null,
             h('div', { class: 'pn' }, p.title),
             h('div', { class: 'small muted' }, p.topic),
             h('div', { class: 'row small muted', style: { marginTop: '6px' } },

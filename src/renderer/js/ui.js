@@ -110,21 +110,14 @@ window.AM = window.AM || {};
       { id: 'demo', label: '체험 모드 (AI 없이 예시로)', mode: 'demo', short: '체험' },
     ],
     image: [
-      { id: 'codex', label: 'ChatGPT 이미지 (Codex CLI) · 자동', mode: 'auto', agent: 'codex', short: 'ChatGPT' },
+      { id: 'codex', label: 'ChatGPT 그림 (Codex CLI) · 자동 · 기준 그림 첨부 ✔', mode: 'auto', agent: 'codex', short: 'ChatGPT' },
       { id: 'grok', label: 'Grok Imagine (grok CLI) · 자동', mode: 'auto', agent: 'grok', short: 'Grok' },
       { id: 'agy', label: 'Gemini 나노바나나 (Antigravity CLI) · 자동 · 실험적', mode: 'auto', agent: 'agy', short: 'Gemini' },
       { id: 'bot:gemini', label: 'Gemini 웹 · 자동 클릭 (실험적)', mode: 'bot', site: 'gemini', short: 'Gemini 웹' },
       { id: 'bot:grok', label: 'Grok Imagine 웹 · 자동 클릭 (실험적)', mode: 'bot', site: 'grok', short: 'Grok 웹' },
       { id: 'bot:chatgpt', label: 'ChatGPT 웹 · 자동 클릭 (실험적)', mode: 'bot', site: 'chatgpt', short: 'ChatGPT 웹' },
-      { id: 'helper', label: '도우미 (웹에서 직접 만들고 다운로드)', mode: 'helper', short: '도우미' },
+      { id: 'helper', label: '도우미 (웹에서 직접 그리고 다운로드)', mode: 'helper', short: '도우미' },
       { id: 'demo', label: '체험 모드 (가짜 그림)', mode: 'demo', short: '체험' },
-    ],
-    video: [
-      { id: 'grok', label: 'Grok Imagine 영상 (grok CLI) · 자동', mode: 'auto', agent: 'grok', short: 'Grok' },
-      { id: 'bot:grok', label: 'Grok Imagine 웹 · 자동 클릭 (실험적)', mode: 'bot', site: 'grok', short: 'Grok 웹' },
-      { id: 'bot:gemini', label: 'Gemini 웹 (Veo) · 자동 클릭 (실험적)', mode: 'bot', site: 'gemini', short: 'Gemini 웹' },
-      { id: 'helper', label: '도우미 (웹에서 직접 만들고 다운로드)', mode: 'helper', short: '도우미' },
-      { id: 'demo', label: '체험 모드 (가짜 영상)', mode: 'demo', short: '체험' },
     ],
   };
   const MODE_LABEL = { auto: '자동', bot: '자동 클릭', helper: '도우미', file: '직접', demo: '체험' };
@@ -133,21 +126,35 @@ window.AM = window.AM || {};
     return (PROVIDERS[kind] || []).find((p) => p.id === id) || { id, label: id, mode: 'auto', short: id };
   }
 
+  const PC = () => ({ short: '내 PC (무료)', mode: 'auto' });
   const STEP_META = [
-    { id: 'music', icon: '🎵', label: '노래·가사', who: () => ({ short: '내 PC (무료)', mode: 'auto' }) },
+    { id: 'music', icon: '🎵', label: '노래·가사', who: PC },
     { id: 'plan', icon: '📝', label: '기획', who: (pv) => providerInfo('text', pv.text) },
-    { id: 'timing', icon: '⏱️', label: '타이밍 설계', who: (pv) => ({ ...providerInfo('text', pv.text), short: `내 PC + ${providerInfo('text', pv.text).short}` }) },
-    { id: 'keyframes', icon: '🖼️', label: '키프레임', who: (pv) => providerInfo('image', pv.image) },
-    { id: 'clips', icon: '🎞️', label: '영상 클립', who: (pv) => providerInfo('video', pv.video) },
-    { id: 'edit', icon: '✨', label: '최종 편집', who: () => ({ short: '내 PC (무료)', mode: 'auto' }) },
+    { id: 'timing', icon: '⏱️', label: '컷 나누기', who: PC },
+    { id: 'xsheet', icon: '📋', label: '타임시트', who: (pv) => ({ ...providerInfo('text', pv.text), short: `${providerInfo('text', pv.text).short} + 내 PC 검사` }) },
+    { id: 'drawings', icon: '🎨', label: '그림', who: (pv) => providerInfo('image', pv.image) },
+    { id: 'render', icon: '🎬', label: '렌더링', who: PC },
+    { id: 'subtitles', icon: '💬', label: '자막', who: PC },
   ];
+
+  // 카메라 움직임 · 효과 이름 (아이도 알아보게)
+  const CAMERA_LABEL = {
+    hold: '📷 가만히', pan_left: '⬅ 왼쪽으로 훑기', pan_right: '➡ 오른쪽으로 훑기', pan_up: '⬆ 위로 훑기', pan_down: '⬇ 아래로 훑기',
+    zoom_in: '🔍 다가가기', zoom_out: '🔭 멀어지기', truck_in: '🚀 확 다가가기', truck_out: '🌌 확 멀어지기', shake: '💥 흔들기',
+  };
+  const FX_LABEL = { fade_in: '🌅 서서히 밝게', fade_out: '🌙 서서히 어둡게', flash: '⚡ 번쩍', sparkle: '✨ 반짝반짝', shake: '💥 쿵', dissolve_in: '🌫 스르륵' };
 
   const STATUS_LABEL = {
     idle: '대기', running: '만드는 중', done: '완성', error: '오류', limited: '한도 대기', stopped: '중지됨', waiting: '기다리는 중',
   };
 
+  /** 색 견본 칩 */
+  function swatch(hex, title) {
+    return h('span', { class: 'swatch', title: title || hex, style: { background: hex } });
+  }
+
   Object.assign(AM, {
-    h, clear, toast, modal, confirmBox, fileUrl, joinPath, fmtSec, fmtDate, safe,
-    PROVIDERS, MODE_LABEL, MODE_CHIP, providerInfo, STEP_META, STATUS_LABEL,
+    h, clear, toast, modal, confirmBox, fileUrl, joinPath, fmtSec, fmtDate, safe, swatch,
+    PROVIDERS, MODE_LABEL, MODE_CHIP, providerInfo, STEP_META, STATUS_LABEL, CAMERA_LABEL, FX_LABEL,
   });
 }(window.AM));

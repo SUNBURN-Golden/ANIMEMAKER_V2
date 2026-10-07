@@ -5,6 +5,7 @@
 
   AM.state = {
     view: 'home',
+    viewArg: null, // 화면에 넘길 값 (예: 고른 시리즈·캐릭터 id)
     projectId: null,
     settings: null,
     info: null,
@@ -14,7 +15,9 @@
   };
 
   const views = {
-    home: () => AM.views.home(),
+    home: () => AM.views.home(AM.state.viewArg),
+    series: () => AM.views.series(AM.state.viewArg),
+    characters: () => AM.views.characters(AM.state.viewArg),
     projects: () => AM.views.projects(),
     project: () => AM.views.project(AM.state.projectId),
     workflows: () => AM.views.workflows(),
@@ -25,6 +28,7 @@
   AM.go = function go(view, arg) {
     if (AM.state.view === 'project' && view !== 'project' && AM.views.projectLeave) AM.views.projectLeave();
     AM.state.view = view;
+    AM.state.viewArg = arg == null ? null : arg;
     if (view === 'project') AM.state.projectId = arg;
     document.querySelectorAll('.nav-item').forEach((b) => b.classList.toggle('active', b.dataset.view === (view === 'project' ? 'projects' : view)));
     const main = clear(document.getElementById('main'));
@@ -64,11 +68,11 @@
     // 사용자 도움이 새로 필요해지면 알림
     if (snap.waiting && (!prev || !prev.waiting || prev.waiting.key !== snap.waiting.key)) {
       if (document.hidden || AM.state.view !== 'project' || AM.state.projectId !== snap.id) {
-        try { new Notification('AnimeMaker: 도움이 필요해요', { body: snap.waiting.title }); } catch (_) { /* noop */ }
+        try { new Notification('AnimeMaker V2: 도움이 필요해요', { body: snap.waiting.title }); } catch (_) { /* noop */ }
       }
     }
     if (prev && prev.status !== 'done' && snap.status === 'done') {
-      try { new Notification('AnimeMaker: 완성!', { body: `${(snap.plan && snap.plan.title) || snap.title} 뮤직비디오가 완성됐어요.` }); } catch (_) { /* noop */ }
+      try { new Notification('AnimeMaker V2: 완성!', { body: `${(snap.plan && snap.plan.title) || snap.title} 에피소드가 완성됐어요.` }); } catch (_) { /* noop */ }
     }
   });
   window.api.onProjectLog(({ projectId, line }) => {

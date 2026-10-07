@@ -8,9 +8,14 @@ const path = require('path');
 
 const { Store } = require('./store');
 const { ProjectRunner } = require('./pipeline/runner');
-const { AGENTS, agentStatus, agentTest, agentText, findBin } = require('./ai/agents');
+const { AGENTS, agentStatus, agentTest, agentText, agentImage, findBin } = require('./ai/agents');
 const { BotManager } = require('./ai/webbot/manager');
 const { SITES } = require('./ai/helper');
+const demo = require('./ai/demo');
+const P = require('./pipeline/prompts');
+const { CAMERA_MOVES } = require('./pipeline/xsheet');
+const { DEFAULT_ART_STYLE, ART_PRESETS } = require('./defaults');
+const { REF_KIND_LABEL, MAX_REFS, normalizeCharacter } = require('./characters');
 const { renderSubtitlePngs } = require('./subtitles');
 const { ffmpegPath } = require('./media/ffmpeg');
 
@@ -119,6 +124,56 @@ function openConsole(title, lines, { powershell = false } = {}) {
   return true;
 }
 
+/** 캐릭터 기준 그림(모델 시트)을 그림 AI 로 그린다. 턴어라운드가 있으면 그것을 기준으로 붙인다. */
+async function generateCharacterRef(id, kind, art) {
+  const s = store.getSettings();
+  const c = store.characters.get(id);
+  if (!c) throw new Error('캐릭터를 찾을 수 없어요.');
+  if (c.isLocked) throw new Error('잠긴 캐릭터예요. 기준 그림을 바꾸려면 먼저 [잠금 풀기] 를 눌러 주세요.');
+  const prov = s.providers.image;
+  const work = path.join(app.getPath('temp'), 'animemaker-v2-char', `${id}-${kind}-${Date.now()}`);
+  fs.mkdirSync(work, { recursive: true });
+  let file;
+  if (prov === 'demo') {
+    file = await demo.demoCharacterRef({ kind, palette: c.palette, w: kind === 'fullbody' ? 768 : 1536, h: 1024, out: path.join(work, 'demo.png') });
+  } else if (AGENTS[prov] && AGENTS[prov].caps.image) {
+    const refs = kind === 'turnaround' ? [] : c.refsAbs.slice(0, 2);
+    const notes = refs.map((_, i) => `${c.name} — ${c.refs[i].kind === 'turnaround' ? 'turnaround model sheet: match this design exactly' : 'reference drawing of the same character'}`);
+    file = await agentImage(prov, {
+      prompt: P.characterSheetPrompt(kind, c, art || DEFAULT_ART_STYLE), aspect: kind === 'fullbody' ? '9:16' : '16:9',
+      refs, refNotes: notes, dir: work, settings: s,
+    });
+  } else {
+    throw new Error('지금 그림 담당이 도우미/자동 클릭이라 앱이 직접 그릴 수 없어요. [📋 프롬프트 복사] 로 사이트에서 그린 뒤 [📁 그림 넣기] 로 넣어 주세요.');
+  }
+  return store.characters.addRef(id, file, kind);
+}
+
+/** 한국어로 적은 캐릭터 설명 → 영어 고정 설명 · 팔레트 · 규칙 (구독 LLM) */
+async function describeCharacter(draft) {
+  const s = store.getSettings();
+  const prov = s.providers.text;
+  let obj;
+  if (prov === 'demo' || !AGENTS[prov]) {
+    obj = { locked: demo.DEMO_CHARACTER.locked, palette: demo.DEMO_CHARACTER.palette, rules: demo.DEMO_CHARACTER.rules, demo: true };
+  } else {
+    obj = await agentText(prov, {
+      prompt: P.describeCharacterPrompt(draft || {}),
+      dir: path.join(app.getPath('temp'), 'animemaker-v2-describe', String(Date.now())),
+      settings: s, accept: P.validCharacterDescription, timeoutMs: 6 * 60 * 1000,
+    });
+  }
+  const n = normalizeCharacter({ name: 'x', locked: obj.locked, palette: obj.palette, rules: obj.rules });
+  return { locked: n.locked, palette: n.palette, rules: n.rules, demo: !!obj.demo };
+}
+
+/** 화면에 보여 줄 시리즈 (캐릭터 이름·잠금·썸네일 포함) */
+function seriesView(se) {
+  const chars = se.characterIds.map((cid) => store.characters.get(cid)).filter(Boolean)
+    .map((c) => ({ id: c.id, name: c.name, isLocked: c.isLocked, version: c.version, thumb: c.refsAbs[0] || null }));
+  return { ...se, characters: chars };
+}
+
 function cleanEnvLine() {
   // 로그인 창에서도 종량제 API 키가 섞이지 않도록
   return process.platform === 'win32'
@@ -139,6 +194,10 @@ function registerIpc() {
     ffmpeg: ffmpegPath(),
     sites: SITES,
     agents: Object.values(AGENTS).map((a) => ({ id: a.id, name: a.name, subscription: a.subscription, caps: a.caps, install: process.platform === 'win32' ? a.install.win : a.install.other, installNote: a.install.note || '', login: a.login, loginNote: a.loginNote })),
+    artPresets: ART_PRESETS,
+    refKinds: REF_KIND_LABEL,
+    maxRefs: MAX_REFS,
+    cameraMoves: CAMERA_MOVES,
   }));
   h('sys:openPath', (p) => shell.openPath(p));
   h('sys:showItem', (p) => { shell.showItemInFolder(p); return true; });
@@ -165,6 +224,10 @@ function registerIpc() {
     if (!info.hasAudio) throw new Error('소리가 없는 파일이에요. 노래 파일(mp3, wav, m4a, mp4 등)을 골라 주세요.');
     return info;
   });
+  h('sys:pickFiles', async (opts = {}) => {
+    const r = await dialog.showOpenDialog(win, { properties: ['openFile', 'multiSelections'], filters: opts.filters || [] });
+    return r.canceled ? [] : r.filePaths;
+  });
   h('sys:pickFolder', async () => {
     const r = await dialog.showOpenDialog(win, { properties: ['openDirectory', 'createDirectory'] });
     return r.canceled ? null : r.filePaths[0];
@@ -179,12 +242,55 @@ function registerIpc() {
   h('wf:save', (wf) => store.saveWorkflow(wf));
   h('wf:delete', (id) => store.deleteWorkflow(id));
 
-  // 프로젝트
+  // 캐릭터 (캐릭터 파일 .amchar)
+  h('char:list', () => store.characters.list());
+  h('char:get', (id) => store.characters.get(id));
+  h('char:save', (c) => store.characters.save(c || {}));
+  h('char:delete', (id) => {
+    const used = store.series.list().filter((se) => se.characterIds.includes(id));
+    if (used.length) throw new Error(`시리즈 "${used.map((x) => x.name).join(', ')}" 에서 쓰는 캐릭터예요. 시리즈에서 먼저 빼 주세요.`);
+    return store.characters.delete(id);
+  });
+  h('char:addRef', (id, file, kind) => store.characters.addRef(id, file, kind));
+  h('char:removeRef', (id, index) => store.characters.removeRef(id, index));
+  h('char:lock', (id) => store.characters.lock(id));
+  h('char:unlock', (id) => store.characters.unlock(id));
+  h('char:export', async (id) => {
+    const c = store.characters.get(id);
+    if (!c) throw new Error('캐릭터를 찾을 수 없어요.');
+    const r = await dialog.showSaveDialog(win, {
+      defaultPath: path.join(app.getPath('documents'), `${c.name.replace(/[\\/:*?"<>|]/g, ' ').trim() || 'character'}.amchar`),
+      filters: [{ name: '캐릭터 파일', extensions: ['amchar'] }],
+    });
+    if (r.canceled || !r.filePath) return null;
+    return store.characters.exportTo(id, r.filePath);
+  });
+  h('char:import', async () => {
+    const r = await dialog.showOpenDialog(win, { properties: ['openFile'], filters: [{ name: '캐릭터 파일', extensions: ['amchar', 'json'] }] });
+    if (r.canceled) return null;
+    return store.characters.importFrom(r.filePaths[0]);
+  });
+  h('char:refPrompt', (id, kind, art) => {
+    const c = store.characters.get(id);
+    if (!c) throw new Error('캐릭터를 찾을 수 없어요.');
+    return P.characterSheetPrompt(kind, c, art || DEFAULT_ART_STYLE);
+  });
+  h('char:generateRef', (id, kind, art) => generateCharacterRef(id, kind, art));
+  h('char:describe', (draft) => describeCharacter(draft));
+
+  // 시리즈 (에피소드 묶음)
+  h('series:list', () => store.series.list().map(seriesView));
+  h('series:save', (se) => seriesView(store.series.save(se || {})));
+  h('series:delete', (id) => store.series.delete(id));
+  h('series:updateEpisode', (id, number, patch) => seriesView(store.series.updateEpisode(id, number, patch)));
+  h('series:createDemo', async () => seriesView((await demo.createDemoSeries(store)).series));
+
+  // 프로젝트 (= 에피소드)
   h('proj:list', () => store.listProjects());
-  h('proj:create', ({ topic, workflowId, songPath, lyricsText, lyricsFilename }) => {
+  h('proj:create', ({ topic, seriesId, workflowId, songPath, lyricsText, lyricsFilename }) => {
     const wf = store.getWorkflow(workflowId);
     if (songPath && !fs.existsSync(songPath)) throw new Error('노래 파일을 찾을 수 없습니다.');
-    const p = store.createProject(String(topic || '').trim(), wf, { songPath, lyricsText, lyricsFilename });
+    const p = store.createProject(String(topic || '').trim(), wf, { songPath, lyricsText, lyricsFilename }, { seriesId: seriesId || null });
     const r = getRunner(p.id);
     r.run();
     return r.snapshot();
@@ -201,8 +307,10 @@ function registerIpc() {
   h('proj:provideFile', (id, key, file) => getRunner(id).provideFile(key, file));
   h('proj:skipWaiting', (id, key) => getRunner(id).skipWaiting(key));
   h('proj:continue', (id) => getRunner(id).continueReview());
-  h('proj:regenerate', (id, kind, clip, opts) => getRunner(id).regenerate(kind, clip, opts || {}));
-  h('proj:replace', (id, kind, clip, file, slot) => { getRunner(id).replaceItem(kind, clip, file, slot); return true; });
+  h('proj:regenerate', (id, kind, shot, opts) => getRunner(id).regenerate(kind, shot, opts || {}));
+  h('proj:replace', (id, kind, shot, file, drawingId) => { getRunner(id).replaceItem(kind, shot, file, drawingId); return true; });
+  h('proj:retime', (id, shot, index, frames) => getRunner(id).retime(shot, index, frames));
+  h('proj:setCamera', (id, shot, move) => getRunner(id).setCamera(shot, move));
   h('proj:updatePlan', (id, plan) => { getRunner(id).updatePlan(plan); return true; });
   h('proj:updateLyrics', (id, lyrics) => { getRunner(id).updateLyrics(lyrics); return true; });
   h('proj:setBpm', (id, bpm) => getRunner(id).setBpm(bpm));
@@ -229,16 +337,19 @@ function registerIpc() {
     return r.snapshot();
   });
 
-  // 주제 추천 (구독 LLM)
-  h('ai:suggestTopics', async (seed) => {
+  // 이번 에피소드 이야기 추천 (구독 LLM)
+  h('ai:suggestTopics', async (seed, seriesId) => {
     const s = store.getSettings();
     const prov = s.providers.text;
+    const se = seriesId ? store.series.get(seriesId) : null;
+    const hero = se ? (store.characters.get(se.characterIds[0]) || {}).name || '주인공' : '주인공';
     if (prov === 'demo' || !AGENTS[prov]) {
-      return ['비 오는 도시를 헤매며 잃어버린 친구를 찾는 고양이', '편의점 알바생 로봇의 첫사랑 이야기', '새벽 지하철에서 만난 유령 DJ 와의 하룻밤', '할머니 댁 다락방에서 찾은 마법 지도로 떠나는 여행', '여름 바닷가 마을의 마지막 불꽃놀이'];
+      return [`${hero} 이(가) 비 오는 밤 잃어버린 우산을 찾아 마을을 헤매는 이야기`, `${hero} 이(가) 바닷가에서 말하는 갈매기를 만나는 이야기`, `${hero} 이(가) 할머니 댁 다락방에서 마법 지도를 찾는 이야기`, `${hero} 이(가) 여름 축제의 마지막 불꽃놀이를 지키는 이야기`, `${hero} 이(가) 하늘을 나는 기차를 타고 별을 배달하는 이야기`];
     }
+    const ctx = se ? `\nIt is the next episode of the animated series "${se.name}" starring ${hero}. Previous episodes: ${se.episodes.slice(-5).map((e) => `EP${e.number} ${e.title}: ${e.summary_ko}`).join(' / ') || '(none yet)'}.` : '';
     const obj = await agentText(prov, {
-      prompt: `Suggest 6 short, original music video concepts (in Korean, one sentence each) for a 3-4 minute AI music video of a song.${seed ? `\nUse this as the basis (user's idea and/or the song lyrics):\n${seed}` : ''}\nReturn JSON: {"topics": ["...", "..."]}`,
-      dir: path.join(app.getPath('temp'), 'animemaker-topics', String(Date.now())),
+      prompt: `Suggest 6 short, original story ideas (in Korean, one sentence each) for a 3-4 minute hand-drawn animated music video episode.${ctx}${seed ? `\nUse this as the basis (user's idea and/or the song lyrics):\n${seed}` : ''}\nReturn JSON: {"topics": ["...", "..."]}`,
+      dir: path.join(app.getPath('temp'), 'animemaker-v2-topics', String(Date.now())),
       settings: s,
       accept: (o) => Array.isArray(o.topics) && o.topics.length > 0,
       timeoutMs: 5 * 60 * 1000,
@@ -248,7 +359,7 @@ function registerIpc() {
 
   // 구독 AI 연결
   h('agent:status', (id) => agentStatus(id, store.getSettings()));
-  h('agent:test', (id) => agentTest(id, store.getSettings(), path.join(app.getPath('temp'), 'animemaker-test', `${id}-${Date.now()}`)));
+  h('agent:test', (id) => agentTest(id, store.getSettings(), path.join(app.getPath('temp'), 'animemaker-v2-test', `${id}-${Date.now()}`)));
   h('agent:login', (id) => {
     const a = AGENTS[id];
     let bin = a.bins[0];
