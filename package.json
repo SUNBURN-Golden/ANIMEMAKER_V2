@@ -10,7 +10,8 @@
   "scripts": {
     "start": "electron .",
     "test": "node --test --test-concurrency=1 \"test/*.test.js\"",
-    "dist:win": "electron-builder --win --x64 --publish never",
+    "fetch:rife": "node scripts/fetch-rife.js",
+    "dist:win": "node scripts/fetch-rife.js --platform win32 && electron-builder --win --x64 --publish never",
     "dist:dir": "electron-builder --dir --publish never"
   },
   "dependencies": {
@@ -33,6 +34,15 @@
       "src/**/*",
       "package.json",
       "!src/**/*.test.js"
+    ],
+    "extraResources": [
+      {
+        "from": "vendor/rife/${platform}-${arch}",
+        "to": "rife",
+        "filter": [
+          "**/*"
+        ]
+      }
     ],
     "asarUnpack": [
       "node_modules/ffmpeg-static/**",

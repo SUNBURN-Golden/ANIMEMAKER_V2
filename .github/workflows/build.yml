@@ -37,6 +37,13 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: 사이 그림 엔진 RIFE 캐시
+        uses: actions/cache@v4
+        with:
+          path: vendor/rife/.cache
+          key: rife-ncnn-vulkan-20221029-windows
+      - name: 사이 그림 엔진 RIFE 받기 (SHA256 확인 후 필요한 파일만)
+        run: node scripts/fetch-rife.js --platform win32 --arch x64
       - name: 설치 파일 빌드
         run: npx electron-builder --win --x64 --publish never
         env:
