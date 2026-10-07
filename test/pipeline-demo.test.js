@@ -19,7 +19,7 @@ function newStore() {
 
 const sum = (a) => a.reduce((x, y) => x + y, 0);
 
-test('demo pipeline: series episode → lyric tap → timesheet → drawings → clean render → subtitles; then subtitles-only and one-shot re-render', { timeout: 900000 }, async () => {
+test('demo pipeline (지브리식): series episode → lyric tap → motion timesheet → BG plates + keyed cels → in-betweens → layered render → subtitles; then subtitles-only and one-shot re-render', { timeout: 900000 }, async () => {
   const { store } = newStore();
   const { series, character } = await demo.createDemoSeries(store);
   assert.ok(character.isLocked && character.refs.length === 3);
@@ -59,14 +59,32 @@ test('demo pipeline: series episode → lyric tap → timesheet → drawings →
   assert.strictEqual(xs.totalFrames, Math.round(p.music.analysis.duration * 24));
   xs.shots.forEach((s, i) => assert.strictEqual(sum(s.exposure.map((e) => e.frames)), p.timing.frames[i], `shot ${s.shot} exact frames`));
   assert.ok(xs.totalDrawings <= xs.budget);
-  const hl = xs.shots.filter((s) => s.highlight);
-  const nm = xs.shots.filter((s) => !s.highlight);
-  assert.ok(hl.length >= 1, 'at least one highlight');
-  if (nm.length) assert.ok(Math.min(...hl.map((s) => s.drawings.length)) > Math.max(...nm.map((s) => s.drawings.length)), 'mixed method: highlights get more drawings');
-  // 그림
+  assert.strictEqual(xs.mode, 'ghibli');
+  assert.strictEqual(xs.keyRate, 6);
+  assert.ok(xs.layers);
+  assert.ok(xs.shots.some((s) => s.highlight), 'at least one highlight');
+  // 지브리식: 노래의 40~50% 정도만 움직이고 (하이라이트 먼저), 나머지는 멈춘 그림 + 카메라
+  const motionFrames = sum(xs.shots.filter((s) => s.motion).map((s) => s.frames));
+  assert.ok(motionFrames / xs.totalFrames >= 0.3 && motionFrames / xs.totalFrames <= 0.6, `motion share ${motionFrames / xs.totalFrames}`);
+  assert.ok(xs.shots.some((s) => !s.motion), 'some shots are held');
+  for (const s of xs.shots.filter((x) => x.motion)) assert.ok(s.exposure.slice(0, -1).every((e) => e.frames === 4), `shot ${s.shot}: keys on 4s`);
+  assert.ok(xs.shots.every((s) => s.bg && s.bg.prompt_en), 'every shot has a background plate');
+  assert.match(logs.join('\n'), /🧮 그림 약 \d+장 \(배경 \d+장 \+ 인물 \d+장\)/);
+  // 그림: 배경 판 + 인물 셀 (초록 배경을 빼서 투명하게)
   assert.strictEqual(p.drawings.length, xs.totalDrawings);
+  assert.strictEqual(p.drawings.filter((d) => d.kind === 'bg').length, xs.shots.length);
   assert.ok(p.drawings.every((d) => d.status === 'done' && fs.existsSync(path.join(p.dir, d.file))));
-  assert.ok(p.drawings.every((d) => d.prompt.includes('long red knitted scarf') || !/하루|Haru/.test(d.prompt)), 'locked design in every character drawing');
+  assert.ok(p.drawings.filter((d) => d.kind === 'cel').every((d) => d.prompt.includes('long red knitted scarf') || !/하루|Haru/.test(d.prompt)), 'locked design in every character cel');
+  assert.ok(p.drawings.filter((d) => d.kind === 'bg').every((d) => /Paint ONLY the place/.test(d.prompt) && !d.prompt.includes('LOCKED DESIGN')), 'background plates: place only');
+  const cels = p.drawings.filter((d) => d.kind === 'cel');
+  assert.ok(cels.every((d) => d.keyed && d.keySource && fs.existsSync(path.join(p.dir, d.cel))), 'every demo cel keyed');
+  // 사이 그림 + 멀티플레인 렌더링
+  const ib = p.render.inbetween;
+  assert.ok(ib.count >= 1, JSON.stringify(ib));
+  assert.ok(logs.some((l) => /🎞 사이 그림: /.test(l)));
+  assert.ok(Object.values(p.inbetweens).every((r) => r.status === 'hold' || fs.existsSync(path.join(p.dir, r.file))));
+  assert.ok(p.render.shots.every((r) => r.layered));
+  assert.ok(p.render.shots.filter((r) => r.motion).every((r) => r.inbetweens >= 1));
   // 렌더링: 깨끗한 원본 (자막 없음) + 노래
   const clean = path.join(p.dir, p.output.clean);
   assert.strictEqual(p.output.clean, 'output/animation_clean.mp4');

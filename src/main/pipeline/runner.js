@@ -3,9 +3,9 @@
 //  1 music     노래·가사: 올린 노래(Suno 등) → BPM·박자·마디 분석                 (내 PC)
 //  2 plan      기획: 시리즈 약속 + 지난 이야기 + 가사에 맞춘 스토리보드          (구독 LLM)
 //  3 timing    타이밍: 가사 싱크 · 박자에 맞춘 컷 나누기 · 하이라이트 찾기       (내 PC)
-//  4 xsheet    타임시트: 컷마다 그림 목록 · 노출 프레임 · 카메라 · 효과           (구독 LLM 이 짜고 PC 가 검사)
-//  5 drawings  그림: 캐릭터 파일의 기준 그림을 붙여서 한 장씩                      (구독 AI)
-//  6 render    렌더링: 타임시트대로 그림을 넘기고 카메라를 움직여 깨끗한 원본     (내 PC, 무료)
+//  4 xsheet    타임시트: 움직일 컷 · 열쇠 그림 · 노출 프레임 · 카메라 · 효과 · 배경  (구독 LLM 이 짜고 PC 가 검사)
+//  5 drawings  그림: 배경 판 + 인물 셀(단색 배경 → PC 가 빼서 투명하게), 기준 그림 붙여서  (구독 AI)
+//  6 render    렌더링: 사이 그림(RIFE/ffmpeg) → 배경·인물 겹치기(멀티플레인) → 깨끗한 원본  (내 PC, 무료)
 //  7 subtitles 자막: 깨끗한 원본 위에 가사 자막을 나중에 입히기                   (내 PC, 무료)
 const { EventEmitter } = require('events');
 const crypto = require('crypto');
@@ -21,6 +21,8 @@ const { analyzeSong } = require('../media/audio');
 const { estimateLyricTiming, scaledCutRange, segmentSong, toSrt, toLrc } = require('../media/timeline');
 const { outputSize, buildAss, assembleAnimation, burnSubtitles, makePaperTexture } = require('../media/assemble');
 const { renderShot } = require('../media/render');
+const { processCel, keyColorFor, writePng } = require('../media/keyer');
+const IB = require('../media/inbetween');
 const { parseLyrics, sectionSummary } = require('../media/lyrics');
 const P = require('./prompts');
 const X = require('./xsheet');
@@ -35,7 +37,8 @@ const STEP_LABELS = {
   render: '렌더링 (깨끗한 원본)',
   subtitles: '자막 입히기',
 };
-const RENDER_VERSION = 1; // 합성 방식이 바뀌면 올려서 예전 컷 영상을 다시 만들게 한다
+const RENDER_VERSION = 3; // 합성 방식이 바뀌면 올려서 예전 컷 영상을 다시 만들게 한다
+const BG_ID = 'bg'; // 배경 판의 id (그림 id 는 늘 대문자라 겹치지 않는다)
 const REF_NOTE = {
   turnaround: 'character turnaround model sheet (front / side / back): copy this design exactly',
   expressions: 'character expression sheet: same face, use for expressions',
@@ -43,6 +46,7 @@ const REF_NOTE = {
   other: 'character reference drawing',
 };
 const PREV_NOTE = 'the previous drawing of this same shot: keep the same background, framing, lighting and line style; change only the pose / expression';
+const PREV_CEL_NOTE = 'the previous drawing of this same shot — EDIT this image: change only what the prompt says, keep everything else identical';
 
 function pad2(n) { return String(n).padStart(2, '0'); }
 function sleep(ms, signal) {
@@ -92,6 +96,9 @@ class ProjectRunner extends EventEmitter {
   get wf() { return this.p.workflow; }
   get settings() { return this.store.getSettings(); }
   get series() { return this.p.series || null; }
+  get mode() { return X.MODES.includes(this.wf.motionMode) ? this.wf.motionMode : 'ghibli'; }
+  get layers() { return this.wf.layers !== false; }
+  get keyRate() { return Number(this.wf.keyRate) === 8 ? 8 : 6; }
 
   log(msg) {
     const d = new Date();
@@ -361,10 +368,15 @@ class ProjectRunner extends EventEmitter {
     ];
     const xs = this.p.xsheet;
     if (xs) {
-      lines.push('## 타임시트 (컷마다 그림 장수 · 카메라)', '', `총 ${xs.shots.length}컷 · 그림 ${xs.totalDrawings}장 (예산 ${xs.budget}장) · ${xs.totalFrames}프레임 (24fps)`, '');
+      const MODE_KO = { ghibli: '지브리식', full: '전체 움직임', limited: '리미티드' };
+      const mode = xs.mode || 'limited';
+      lines.push('## 타임시트 (컷마다 그림 장수 · 카메라)', '',
+        `움직임 방식: ${MODE_KO[mode] || mode}${mode === 'limited' ? '' : ` (움직이는 컷은 1초 ${xs.keyRate}장 + 사이 그림)`}${xs.layers ? ' · 배경 판 + 인물 셀' : ''}`,
+        `총 ${xs.shots.length}컷 · 그림 ${xs.totalDrawings}장 (예산 ${xs.budget}장) · ${xs.totalFrames}프레임 (24fps)`,
+        xs.estimate ? `예상: ${X.estimateText(xs.estimate)}` : '', '');
       xs.shots.forEach((sh, i) => {
         const tr = xs.transitions[i];
-        lines.push(`- 컷 ${sh.shot} (${sh.start.toFixed(2)}~${sh.end.toFixed(2)}초, ${sh.frames}프레임)${sh.highlight ? ' ⭐하이라이트' : ''}: 그림 ${sh.drawings.length}장 · 카메라 ${sh.camera.move}${sh.fx.length ? ` · 효과 ${sh.fx.join(', ')}` : ''} → ${tr ? tr.type : '끝'}`);
+        lines.push(`- 컷 ${sh.shot} (${sh.start.toFixed(2)}~${sh.end.toFixed(2)}초, ${sh.frames}프레임)${sh.highlight ? ' ⭐하이라이트' : ''}${sh.motion ? ' 🏃움직임' : ''}: ${xs.layers && sh.bg ? '배경 1장 + ' : ''}${xs.layers ? '인물 ' : '그림 '}${sh.drawings.length}장 · 카메라 ${sh.camera.move}${sh.fx.length ? ` · 효과 ${sh.fx.join(', ')}` : ''} → ${tr ? tr.type : '끝'}`);
         lines.push(`  - 노출: ${sh.exposure.map((e) => `${e.drawing}×${e.frames}`).join(' ')}`);
       });
     }
@@ -425,12 +437,22 @@ class ProjectRunner extends EventEmitter {
   xsheetContext() {
     const t = this.p.timing;
     const analysis = this.p.music.analysis;
-    const budget = X.resolveBudget(this.wf, analysis.duration, t.segments.length);
+    const frames = t.frames || X.shotFrames(t.segments);
+    const highlights = t.highlights || X.markHighlights(t.segments, t.lyrics);
+    const { mode, keyRate, layers } = this;
+    const motion = X.assignMotion(t.segments, frames, highlights, mode);
+    const budget = X.resolveBudget(this.wf, analysis.duration, t.segments.length, { mode, frames, motion, keyRate, layers });
     return {
       plan: this.p.plan, series: this.series, segments: t.segments, lyrics: t.lyrics, analysis, wf: this.wf,
-      frames: t.frames || X.shotFrames(t.segments), highlights: t.highlights || X.markHighlights(t.segments, t.lyrics),
-      alloc: X.allocateDrawings(t.frames || X.shotFrames(t.segments), t.highlights || [], budget), budget,
+      frames, highlights, mode, keyRate, layers, motion, budget,
+      alloc: X.allocateDrawings(frames, highlights, Math.max(t.segments.length, budget - (layers ? t.segments.length : 0))),
     };
+  }
+
+  /** 셀 배경색: 시리즈 캐릭터 팔레트에 초록이 있으면 마젠타 */
+  keyColor() {
+    const pal = this.series ? this.series.characters.flatMap((c) => c.palette || []) : [];
+    return keyColorFor(pal);
   }
 
   async step_xsheet() {
@@ -457,33 +479,43 @@ class ProjectRunner extends EventEmitter {
       }
     }
     const xs = X.normalizeXsheet(raw, ctx);
+    xs.keyColor = this.keyColor();
     for (const n of xs.notes.slice(0, 30)) this.log(`🔧 ${n}`);
     this.p.xsheet = xs;
+    this.p.drawingsApproved = false;
     this.buildDrawings();
-    const hl = xs.shots.filter((s) => s.highlight);
-    this.log(`📋 타임시트: 컷 ${xs.shots.length}개 · 그림 ${xs.totalDrawings}장 (예산 ${xs.budget}장) · 하이라이트 ${hl.length}컷에 ${hl.reduce((a, s) => a + s.drawings.length, 0)}장`);
+    const MODE_KO = { ghibli: '지브리식', full: '전체 움직임', limited: '리미티드' };
+    const e = xs.estimate;
+    this.log(`📋 타임시트 (${MODE_KO[xs.mode]}${xs.mode === 'limited' ? '' : ` · 1초 ${xs.keyRate}장`}): 컷 ${xs.shots.length}개 · 움직이는 컷 ${e.motionShots}개(${e.motionSeconds}초) · 예산 ${xs.budget}장`);
+    this.log(`🧮 ${X.estimateText(e)}`);
     fs.mkdirSync(path.join(this.dir, 'output'), { recursive: true });
-    fs.writeFileSync(path.join(this.dir, 'output', 'timesheet.json'), JSON.stringify({ fps: xs.fps, budget: xs.budget, totalFrames: xs.totalFrames, shots: xs.shots, transitions: xs.transitions }, null, 1));
+    fs.writeFileSync(path.join(this.dir, 'output', 'timesheet.json'), JSON.stringify({ fps: xs.fps, mode: xs.mode, keyRate: xs.keyRate, layers: xs.layers, keyColor: xs.keyColor, budget: xs.budget, totalFrames: xs.totalFrames, estimate: xs.estimate, shots: xs.shots, transitions: xs.transitions }, null, 1));
     this.writeStoryboard();
     this.save();
-    if (this.wf.reviewAfterXsheet) await this.review('xsheet', `타임시트를 확인해 주세요. 그림 ${xs.totalDrawings}장을 그릴 거예요. 괜찮으면 [계속] 을 눌러 주세요.`);
   }
 
-  /** 타임시트 → 그림 작업 목록. 프롬프트가 같으면 이미 그린 그림을 그대로 쓴다. */
+  /** 타임시트 → 그림 작업 목록 (컷마다 배경 판 1장 + 인물 셀). 프롬프트가 같으면 이미 그린 그림을 그대로 쓴다. */
   buildDrawings() {
     const xs = this.p.xsheet;
     const old = new Map((this.p.drawings || []).map((d) => [d.key, d]));
     this.p.drawings = [];
+    const keep = (key, kind, shot, id, prompt) => {
+      const o = old.get(key);
+      this.p.drawings.push(o && (o.prompt === prompt || o.custom) && this.exists(o.file)
+        ? { ...o, kind } : { key, kind, shot: shot.shot, id, prompt, status: 'pending', file: null });
+    };
     for (const shot of xs.shots) {
+      if (xs.layers && shot.bg) keep(`${shot.shot}:${BG_ID}`, 'bg', shot, BG_ID, P.composeBgPrompt({ plan: this.p.plan, series: this.series, shot, wf: this.wf }));
       for (const d of shot.drawings) {
-        const prompt = P.composeDrawingPrompt({ plan: this.p.plan, series: this.series, shot, drawing: d, wf: this.wf });
-        const key = `${shot.shot}:${d.id}`;
-        const o = old.get(key);
-        this.p.drawings.push(o && (o.prompt === prompt || o.custom) && this.exists(o.file)
-          ? o : { key, shot: shot.shot, id: d.id, prompt, status: 'pending', file: null });
+        const prompt = xs.layers
+          ? P.composeCelPrompt({ plan: this.p.plan, series: this.series, shot, drawing: d, wf: this.wf, keyColor: xs.keyColor })
+          : P.composeDrawingPrompt({ plan: this.p.plan, series: this.series, shot, drawing: d, wf: this.wf });
+        keep(`${shot.shot}:${d.id}`, 'cel', shot, d.id, prompt);
       }
     }
   }
+
+  itemOf(shotNo, id) { return (this.p.drawings || []).find((x) => x.key === `${shotNo}:${id}`); }
 
   // ---------- 5. 그림 ----------
   async step_drawings() {
@@ -491,6 +523,12 @@ class ProjectRunner extends EventEmitter {
     const items = this.p.drawings || [];
     const todo = items.filter((it) => !(it.status === 'done' && this.exists(it.file)));
     const total = items.length;
+    const xs = this.p.xsheet;
+    // 그리기 전에 예상 장수·시간을 보여 주고 멈춘다 (체험 모드는 공짜라 멈추지 않음)
+    if (todo.length && !this.p.drawingsApproved && this.wf.reviewBeforeDrawings !== false && this.p.providers.image !== 'demo') {
+      await this.review('drawings', `그림을 그리기 전에 확인해 주세요. ${X.estimateText(xs.estimate)}. 괜찮으면 [계속] 을 눌러 주세요. 너무 많으면 [중지] 후 워크플로우에서 움직임 방식(리미티드)이나 그림 장수 예산을 줄일 수 있어요.`);
+    }
+    this.p.drawingsApproved = true;
     const prov = this.p.providers.image || '';
     const conc = prov === 'helper' || prov.startsWith('bot:') ? 1 : Math.max(1, this.settings.concurrency.image || 1);
     // 같은 컷의 그림은 순서대로 (앞 그림을 다음 그림의 기준으로 붙이기 위해), 다른 컷끼리는 동시에
@@ -515,7 +553,7 @@ class ProjectRunner extends EventEmitter {
           it.error = null;
           this.save();
           try {
-            const rel = await this.withRetry(`그림 컷${it.shot}-${it.id}`, () => this.drawOne(it));
+            const rel = await this.withRetry(`${it.kind === 'bg' ? '배경' : '그림'} 컷${it.shot}-${it.id}`, () => this.drawOne(it));
             if (rel) { it.file = rel; it.status = 'done'; it.updatedAt = Date.now(); } else it.status = 'skipped';
           } catch (e) {
             if (hardStop(e)) { it.status = 'pending'; this.save(); throw e; }
@@ -538,10 +576,26 @@ class ProjectRunner extends EventEmitter {
 
   shotOf(no) { return this.p.xsheet.shots.find((s) => s.shot === no); }
 
-  /** 이 그림에 붙일 기준 그림: 컷에 나오는 고정 캐릭터의 시트 + 같은 컷의 앞 그림 */
+  /**
+   * 이 그림에 붙일 기준 그림.
+   *  - 배경 판: 없음 (인물이 들어가면 안 되므로)
+   *  - 인물 셀: 같은 컷의 바로 앞 셀이 있으면 그걸 '첫 번째' 로 붙이고 고치기(edit)로 부탁 + 고정 캐릭터 시트
+   */
   drawingRefs(shot, id) {
     const refs = [];
     const notes = [];
+    if (id === BG_ID) return { refs, notes, prev: null };
+    const layers = this.p.xsheet && this.p.xsheet.layers;
+    const idx = shot.drawings.findIndex((x) => x.id === id);
+    let prev = null;
+    for (let k = idx - 1; k >= 0; k--) {
+      const it = this.itemOf(shot.shot, shot.drawings[k].id);
+      if (it && it.status === 'done' && this.exists(it.file)) { prev = it; break; }
+    }
+    if (prev) {
+      refs.push(this.abs(layers && prev.keyed && this.exists(prev.plate) ? prev.plate : prev.file));
+      notes.push(layers ? PREV_CEL_NOTE : PREV_NOTE);
+    }
     const s = this.series;
     if (s) {
       const d = shot.drawings.find((x) => x.id === id) || {};
@@ -559,43 +613,62 @@ class ProjectRunner extends EventEmitter {
         }
       }
     }
-    const idx = shot.drawings.findIndex((x) => x.id === id);
-    for (let k = idx - 1; k >= 0; k--) {
-      const prev = (this.p.drawings || []).find((x) => x.key === `${shot.shot}:${shot.drawings[k].id}`);
-      if (prev && prev.status === 'done' && this.exists(prev.file)) {
-        refs.push(this.abs(prev.file));
-        notes.push(PREV_NOTE);
-        break;
-      }
-    }
-    return { refs, notes };
+    return { refs, notes, prev };
   }
 
-  /** 그림 한 장 그리기 → 작업 폴더 안 상대 경로 */
+  /** 그림 한 장 그리기 → 작업 폴더 안 상대 경로 (셀이면 배경까지 빼 둔다) */
   async drawOne(it) {
     const shot = this.shotOf(it.shot);
-    const { refs, notes } = this.drawingRefs(shot, it.id);
+    const xs = this.p.xsheet;
+    const isBg = it.kind === 'bg';
+    const { refs, notes, prev } = this.drawingRefs(shot, it.id);
     const index = shot.drawings.findIndex((d) => d.id === it.id);
+    const def = shot.drawings[index] || { prompt_en: '' };
+    const prompt = prev ? P.celEditPrefix(def, xs.layers ? xs.keyColor : null) + it.prompt : it.prompt;
     const file = await this.genImage({
-      key: `image:${it.shot}:${it.id}`, prompt: it.prompt, refs, refNotes: notes,
-      title: `그림 컷${it.shot}-${it.id}`,
-      demo: { shot: it.shot, index, count: shot.drawings.length, highlight: shot.highlight },
+      key: `image:${it.shot}:${it.id}`, prompt, refs, refNotes: notes,
+      title: isBg ? `배경 컷${it.shot}` : `그림 컷${it.shot}-${it.id}`,
+      demo: { kind: isBg ? 'bg' : xs.layers ? 'cel' : 'full', shot: it.shot, index, count: shot.drawings.length, highlight: shot.highlight, motion: !!shot.motion, keyColor: xs.keyColor },
     }, `s${pad2(it.shot)}_${it.id}`);
     if (!file) return null;
     const dst = path.join(this.dir, 'drawings', `shot${pad2(it.shot)}_${it.id}${path.extname(file).toLowerCase() || '.png'}`);
     this.removeOld(it.file, dst);
     fs.copyFileSync(file, dst);
-    return this.rel(dst);
+    it.file = this.rel(dst);
+    if (!isBg && xs.layers) await this.processCelItem(it, shot);
+    return it.file;
+  }
+
+  /** 셀 배경 빼기 + 색 맞추기 (같은 컷 첫 셀 기준) */
+  async processCelItem(it, shot) {
+    const xs = this.p.xsheet;
+    const first = shot.drawings[0] && this.itemOf(shot.shot, shot.drawings[0].id);
+    const refStats = first && first !== it && first.keyed ? first.stats : null;
+    const base = path.join(this.dir, 'drawings', 'cels', `shot${pad2(shot.shot)}_${it.id}`);
+    fs.mkdirSync(path.dirname(base), { recursive: true });
+    const r = await processCel(this.abs(it.file), { celOut: `${base}.png`, plateOut: `${base}_plate.png`, keyColor: xs.keyColor, refStats, signal: this.abort && this.abort.signal });
+    if (r.keyed) {
+      Object.assign(it, { keyed: true, cel: this.rel(r.cel), plate: this.rel(r.plate), stats: r.stats, keySource: r.source });
+    } else {
+      Object.assign(it, { keyed: false, cel: null, plate: null, stats: null, keySource: null });
+      this.log(`ℹ 컷${it.shot}-${it.id}: 배경이 단색이 아니라 뺄 수 없어서 전체 그림으로 씁니다.`);
+    }
   }
 
   async genImage({ key, prompt, refs, refNotes, title, demo: dm }, tag) {
     const prov = this.p.providers.image;
     const work = path.join(this.dir, 'work', 'images', `${tag}_${Date.now()}`);
     fs.mkdirSync(work, { recursive: true });
-    const { w, h } = outputSize(this.wf.aspect, '720p');
     if (prov === 'demo') {
+      // 체험 그림은 화면보다 조금 크게 (카메라가 움직일 여유)
+      const { w, h } = outputSize(this.wf.aspect, this.wf.quality);
+      const size = { w: Math.round(w * 1.2), h: Math.round(h * 1.2) };
       const pal = this.series && this.series.characters[0] ? this.series.characters[0].palette : demo.DEMO_CHARACTER.palette;
-      return demo.demoDrawing({ ...(dm || {}), palette: pal, w: Math.round(w * 1.2), h: Math.round(h * 1.2), out: path.join(work, 'demo.png'), signal: this.abort.signal });
+      const out = path.join(work, 'demo.png');
+      const d = dm || {};
+      if (d.kind === 'bg') return demo.demoBg({ ...size, shot: d.shot, out, signal: this.abort.signal });
+      if (d.kind === 'cel') return demo.demoCel({ ...size, ...d, palette: pal, out, signal: this.abort.signal });
+      return demo.demoDrawing({ ...size, ...d, palette: pal, out, signal: this.abort.signal });
     }
     if (AGENTS[prov]) {
       return agentImage(prov, { prompt, aspect: this.wf.aspect, refs, refNotes, dir: work, settings: this.settings, signal: this.abort.signal, onLog: (l) => this.log(l) });
@@ -610,7 +683,7 @@ class ProjectRunner extends EventEmitter {
     }
     const site = this.p.helperSites.image || 'gemini';
     return this.waitForUser({ key, kind: 'image', title, site, copyText: copy, image: refs[0], images: refs, imageNotes: refNotes,
-      message: `① 아래 기준 그림(캐릭터 시트 등)을 [${(SITES[site] || {}).name || '사이트'}] 에 첨부 → ② [프롬프트 복사] 후 붙여넣고 생성 → ③ 다운로드. 자동으로 가져옵니다.` });
+      message: `① 아래 기준 그림(앞 그림·캐릭터 시트)을 [${(SITES[site] || {}).name || '사이트'}] 에 첨부 → ② [프롬프트 복사] 후 붙여넣고 생성 → ③ 다운로드. 자동으로 가져옵니다.` });
   }
 
   /** 자동 클릭 시도. 막히면 null (→ 도우미 모드) */
@@ -663,27 +736,133 @@ class ProjectRunner extends EventEmitter {
   }
 
   // ---------- 6. 렌더링 ----------
-  /** 컷에 쓸 그림 파일들. 없는 그림은 같은 컷(없으면 앞 컷)의 그림으로 대신한다. */
-  drawingFilesFor(shotIdx) {
+  /**
+   * 컷에 쓸 그림 재료. 셀은 배경을 뺀 투명 그림(못 뺐으면 전체 그림),
+   * 없는 그림은 같은 컷(없으면 앞 컷)의 그림으로 대신한다.
+   * @returns {Map<string, {file:string, raw:string, plate:string|null, keyed:boolean}|null>}
+   */
+  shotMaterials(shotIdx) {
     const xs = this.p.xsheet;
     const shot = xs.shots[shotIdx];
-    const good = (no, id) => {
-      const d = (this.p.drawings || []).find((x) => x.key === `${no}:${id}`);
-      return d && d.file && this.exists(d.file) ? this.abs(d.file) : null;
+    const look = (no, id) => {
+      const d = this.itemOf(no, id);
+      if (!d || !d.file || !this.exists(d.file)) return null;
+      if (xs.layers && d.keyed && this.exists(d.cel) && this.exists(d.plate)) return { file: this.abs(d.cel), raw: this.abs(d.file), plate: this.abs(d.plate), keyed: true };
+      return { file: this.abs(d.file), raw: this.abs(d.file), plate: null, keyed: false };
     };
     const map = new Map();
-    const inShot = shot.drawings.map((d) => good(shot.shot, d.id)).filter(Boolean);
-    let fallback = inShot[0] || null;
+    let fallback = null;
+    for (const d of shot.drawings) fallback = fallback || look(shot.shot, d.id);
     for (let k = shotIdx - 1; !fallback && k >= 0; k--) {
       const s = xs.shots[k];
-      for (const d of s.drawings) { fallback = fallback || good(s.shot, d.id); }
+      for (const d of s.drawings) fallback = fallback || look(s.shot, d.id);
     }
     for (const d of shot.drawings) {
-      const f = good(shot.shot, d.id);
-      if (!f) this.log(`ℹ 컷 ${shot.shot}: 그림 ${d.id} 가 없어서 다른 그림으로 대신합니다.`);
-      map.set(d.id, f || fallback);
+      const m = look(shot.shot, d.id);
+      if (!m) this.log(`ℹ 컷 ${shot.shot}: 그림 ${d.id} 가 없어서 다른 그림으로 대신합니다.`);
+      map.set(d.id, m || fallback);
     }
     return map;
+  }
+
+  /** 배경 판: 이 컷 → 없으면 가까운 컷의 배경 → 그래도 없으면 빈 종이색 */
+  async shotBg(shotIdx, work) {
+    const xs = this.p.xsheet;
+    const order = [shotIdx];
+    for (let k = 1; k < xs.shots.length; k++) order.push(shotIdx - k, shotIdx + k);
+    for (const k of order) {
+      const s = xs.shots[k];
+      const it = s && this.itemOf(s.shot, BG_ID);
+      if (it && it.file && this.exists(it.file)) {
+        if (k !== shotIdx) this.log(`ℹ 컷 ${xs.shots[shotIdx].shot}: 배경 판이 없어서 컷 ${s.shot} 의 배경을 씁니다.`);
+        return this.abs(it.file);
+      }
+    }
+    const blank = path.join(work, 'blank_bg.png');
+    if (!fs.existsSync(blank)) {
+      const px = new Uint8ClampedArray(64 * 36 * 3);
+      for (let i = 0; i < px.length; i += 3) { px[i] = 0xf4; px[i + 1] = 0xec; px[i + 2] = 0xd8; }
+      await writePng(blank, px, 64, 36, { rgb: true, signal: this.abort && this.abort.signal });
+    }
+    return blank;
+  }
+
+  /** 셀 배경 빼기를 아직 안 한 그림(직접 넣은 파일 등)은 렌더링 전에 처리 */
+  async ensureCelsProcessed() {
+    const xs = this.p.xsheet;
+    if (!xs.layers) return;
+    for (const it of this.p.drawings || []) {
+      if (it.kind === 'bg' || it.status !== 'done' || !this.exists(it.file)) continue;
+      if (it.keyed === undefined || it.keyed === null || (it.keyed && !(this.exists(it.cel) && this.exists(it.plate)))) {
+        this.checkAbort();
+        const shot = this.shotOf(it.shot);
+        if (shot) await this.processCelItem(it, shot);
+      }
+    }
+  }
+
+  /**
+   * 움직이는 컷의 사이 그림 (이웃한 열쇠 그림 A·B 사이 한 장). 이미 만든 건 그대로.
+   * @returns {Promise<Map<string, object>>} pairKey → 기록
+   */
+  async inbetweensFor(shot, mats, eng, tally) {
+    const xs = this.p.xsheet;
+    const got = new Map();
+    const pairs = X.motionPairs(shot);
+    if (!pairs.length || !eng.engine) return got;
+    const signal = this.abort && this.abort.signal;
+    const dir = path.join(this.dir, 'drawings', 'inbetweens');
+    this.p.inbetweens = this.p.inbetweens || {};
+    for (const pk of pairs) {
+      this.checkAbort();
+      const [ia, ib] = pk.split('~');
+      const A = mats.get(ia);
+      const B = mats.get(ib);
+      if (!A || !B || A.raw === B.raw) continue; // 같은 그림으로 대신한 칸 → 사이 그림 없음
+      const keyed = A.keyed && B.keyed;
+      const inA = keyed ? A.plate : A.raw;
+      const inB = keyed ? B.plate : B.raw;
+      const keyColor = keyed ? xs.keyColor : null;
+      const sig = IB.inbetweenHash(inA, inB, eng.setting, keyColor);
+      const key = `${shot.shot}:${pk}`;
+      const old = this.p.inbetweens[key];
+      if (old && old.sig === sig && (old.status === 'hold' || (old.status === 'done' && this.exists(old.file)))) {
+        got.set(pk, old);
+        tally[old.status === 'done' ? old.engine : 'hold'] = (tally[old.status === 'done' ? old.engine : 'hold'] || 0) + 1;
+        continue;
+      }
+      this.setStep('render', { message: `사이 그림 만드는 중… 컷 ${shot.shot} (${pk})` });
+      const rec = { key, shot: shot.shot, pair: pk, sig, status: 'hold', file: null, plate: null, engine: null, device: null };
+      const diff = await IB.tooDifferent(keyed ? A.file : A.raw, keyed ? B.file : B.raw, { signal });
+      rec.score = diff.score;
+      if (diff.different) {
+        rec.reason = 'different';
+      } else {
+        const engines = eng.engine === 'rife' && !eng.rifeBroken ? ['rife', 'ffmpeg'] : ['ffmpeg'];
+        for (const engine of engines) {
+          try {
+            const r = await IB.makeInbetween({ a: inA, b: inB, outDir: dir, engine, rife: eng.rife, keyColor, signal });
+            Object.assign(rec, { status: 'done', file: this.rel(r.file), plate: this.rel(r.plate), engine, device: r.device });
+            break;
+          } catch (e) {
+            if (e.name === 'AbortError') throw e;
+            if (engine === 'rife') {
+              eng.rifeBroken = true;
+              this.log(`⚠ RIFE 가 이 PC 에서 잘 안 돼서 ffmpeg 로 바꿉니다: ${e.message.split('\n')[0]}`);
+            } else {
+              rec.reason = 'error';
+              this.log(`⚠ 컷 ${shot.shot} 사이 그림(${pk})을 만들지 못해서 그대로 넘깁니다: ${e.message.split('\n')[0]}`);
+            }
+          }
+        }
+      }
+      if (rec.status === 'done' && rec.device !== 'cache') tally.made = (tally.made || 0) + 1;
+      if (rec.status === 'done' && rec.device && rec.device !== 'cache') eng.devices.add(`${rec.engine === 'rife' ? 'RIFE' : 'ffmpeg'}${rec.engine === 'rife' ? `·${rec.device === 'gpu' ? '그래픽카드' : 'CPU'}` : ''}`);
+      tally[rec.status === 'done' ? rec.engine : 'hold'] = (tally[rec.status === 'done' ? rec.engine : 'hold'] || 0) + 1;
+      this.p.inbetweens[key] = rec;
+      got.set(pk, rec);
+    }
+    return got;
   }
 
   async step_render() {
@@ -696,34 +875,65 @@ class ProjectRunner extends EventEmitter {
     const prev = (this.p.render && this.p.render.shots) || [];
     const shots = [];
     const n = xs.shots.length;
+    const layered = !!xs.layers;
+    await this.ensureCelsProcessed();
+    // 사이 그림 엔진 고르기 (움직이는 컷이 있을 때만)
+    const setting = ['auto', 'rife', 'ffmpeg', 'off'].includes(this.wf.inbetween) ? this.wf.inbetween : 'auto';
+    const hasMotion = xs.shots.some((s) => X.motionPairs(s).length);
+    const eng = hasMotion ? { ...IB.resolveEngine(setting), setting, rifeBroken: false, devices: new Set() } : { engine: null, setting, devices: new Set() };
+    if (hasMotion) this.log(`🎞 사이 그림: ${eng.engine ? eng.note : '끔 (열쇠 그림만 넘김)'}`);
+    const tally = {};
+    // 지금 타임시트에 없는 사이 그림 기록은 지운다
+    const live = new Set(xs.shots.flatMap((s) => X.motionPairs(s).map((pk) => `${s.shot}:${pk}`)));
+    this.p.inbetweens = Object.fromEntries(Object.entries(this.p.inbetweens || {}).filter(([k]) => live.has(k)));
+    const sigOf = (f) => {
+      if (!f) return '-';
+      try { const st = fs.statSync(f); return `${this.rel(f)}:${st.size}:${Math.round(st.mtimeMs)}`; } catch (_) { return `${f}:-`; }
+    };
     for (let i = 0; i < n; i++) {
       this.checkAbort();
       const shot = xs.shots[i];
       const lead = i > 0 ? xs.transitions[i - 1].frames / 2 : 0;
       const tail = i < xs.transitions.length ? xs.transitions[i].frames / 2 : 0;
-      const files = this.drawingFilesFor(i);
-      const sig = [...files.entries()].map(([id, f]) => {
-        if (!f) return `${id}:-`;
-        const st = fs.statSync(f);
-        return `${id}:${this.rel(f)}:${st.size}:${Math.round(st.mtimeMs)}`;
-      });
-      const key = crypto.createHash('sha1').update(JSON.stringify([RENDER_VERSION, w, h, lead, tail, !!fin.boil, shot.frames, shot.exposure, shot.camera, shot.fx, sig])).digest('hex');
+      const mats = this.shotMaterials(i);
+      const ibs = await this.inbetweensFor(shot, mats, eng, tally);
+      const done = (a, b) => { const r = ibs.get(X.pairKey(a, b)); return !!(r && r.status === 'done'); };
+      const table = X.expandExposure(shot, done);
+      const layers = new Map();
+      for (const id of new Set(table)) {
+        if (id.includes('~')) layers.set(id, this.abs(ibs.get(id).file));
+        else layers.set(id, mats.get(id) ? mats.get(id).file : null);
+      }
+      const bg = layered ? await this.shotBg(i, work) : null;
+      const sig = [...layers.entries()].map(([id, f]) => `${id}=${sigOf(f)}`);
+      const parallax = 0.8;
+      const key = crypto.createHash('sha1').update(JSON.stringify([RENDER_VERSION, w, h, lead, tail, !!fin.boil, shot.frames, table, shot.camera, shot.fx, sig, layered ? sigOf(bg) : null, parallax])).digest('hex');
       const out = path.join(work, `shot${pad2(shot.shot)}.mp4`);
       const old = prev.find((r) => r.shot === shot.shot);
+      const ibCount = [...ibs.values()].filter((r) => r.status === 'done').length;
+      const held = [...ibs.values()].filter((r) => r.status === 'hold').length;
+      const engines = [...new Set([...ibs.values()].filter((r) => r.status === 'done').map((r) => r.engine))];
+      const meta = { motion: !!shot.motion, inbetweens: ibCount, held, engine: engines.join('+') || null, layered };
       if (old && old.key === key && fs.existsSync(out)) {
-        shots.push({ shot: shot.shot, key, file: this.rel(out), frames: old.frames });
+        shots.push({ ...old, ...meta, shot: shot.shot, key, file: this.rel(out) });
         continue;
       }
-      this.setStep('render', { message: `컷 ${i + 1}/${n} 그리는 중 (그림 넘기기·카메라)`, progress: { done: i, total: n + 1 } });
+      this.setStep('render', { message: `컷 ${i + 1}/${n} 그리는 중 (배경·인물 겹치기·카메라)`, progress: { done: i, total: n + 1 } });
       const r = await renderShot({
-        shot, files, W: w, H: h, lead, tail, boil: !!fin.boil, seed: 1, out, signal: this.abort.signal,
+        shot, table, bg, layers, parallax, W: w, H: h, lead, tail, boil: !!fin.boil, seed: 1, out, signal: this.abort.signal,
         onProgress: (fr) => this.setStep('render', { message: `컷 ${i + 1}/${n} 그리는 중 ${Math.round(fr * 100)}%`, progress: { done: i + fr, total: n + 1 } }),
       });
-      shots.push({ shot: shot.shot, key, file: this.rel(out), frames: r.frames });
+      shots.push({ shot: shot.shot, key, file: this.rel(out), frames: r.frames, ...meta });
       this.p.render = { ...(this.p.render || {}), shots: [...shots, ...prev.filter((x) => !shots.some((y) => y.shot === x.shot))] };
       this.save();
     }
-    this.p.render = { ...(this.p.render || {}), shots };
+    const ibTotal = shots.reduce((a, s) => a + (s.inbetweens || 0), 0);
+    const heldTotal = shots.reduce((a, s) => a + (s.held || 0), 0);
+    const used = [...eng.devices];
+    this.p.render = { ...(this.p.render || {}), shots, inbetween: { setting, engine: eng.rifeBroken ? 'ffmpeg' : eng.engine, used, count: ibTotal, held: heldTotal } };
+    if (hasMotion && eng.engine) {
+      this.log(`🎞 사이 그림 ${ibTotal}장 (새로 ${tally.made || 0}장${used.length ? `, ${used.join(' · ')}` : ''})${heldTotal ? ` · 너무 달라서 그대로 넘긴 곳 ${heldTotal}군데` : ''}`);
+    }
     const outDir = path.join(this.dir, 'output');
     fs.mkdirSync(outDir, { recursive: true });
     const paper = fin.paper ? await makePaperTexture(w, h, path.join(work, 'paper.png'), { signal: this.abort.signal }) : null;
@@ -832,8 +1042,8 @@ class ProjectRunner extends EventEmitter {
     }
   }
 
-  /** 사용자가 고른 그림 파일로 교체 */
-  replaceItem(kind, shotNo, file, id) {
+  /** 사용자가 고른 그림 파일로 교체 (인물 셀이면 배경 빼기까지) */
+  async replaceItem(kind, shotNo, file, id) {
     if (kind !== 'drawing') throw new Error('알 수 없는 항목입니다.');
     const it = (this.p.drawings || []).find((x) => x.shot === shotNo && x.id === id);
     if (!it) throw new Error('그림을 찾을 수 없습니다.');
@@ -841,7 +1051,16 @@ class ProjectRunner extends EventEmitter {
     fs.mkdirSync(path.dirname(dst), { recursive: true });
     this.removeOld(it.file, dst);
     fs.copyFileSync(file, dst);
-    Object.assign(it, { file: this.rel(dst), status: 'done', error: null, updatedAt: Date.now() });
+    Object.assign(it, { file: this.rel(dst), status: 'done', error: null, updatedAt: Date.now(), keyed: null, cel: null, plate: null, stats: null });
+    const xs = this.p.xsheet;
+    const shot = xs && this.shotOf(shotNo);
+    if (xs && xs.layers && it.kind !== 'bg' && shot) {
+      try {
+        await this.processCelItem(it, shot);
+      } catch (e) {
+        this.log(`⚠ 컷${shotNo}-${id} 배경 빼기 실패 (렌더링 때 다시 해 볼게요): ${e.message.split('\n')[0]}`);
+      }
+    }
     this.p.renderStale = true;
     this.save();
   }

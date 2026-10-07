@@ -21,7 +21,10 @@ fs.appendFileSync(path.join(process.cwd(), `fake-${name}-calls.log`), `${JSON.st
 fs.writeFileSync(path.join(process.cwd(), `fake-${name}-prompt.txt`), prompt);
 
 function img(out, color) {
-  execFileSync(ffmpeg, ['-loglevel', 'error', '-y', '-f', 'lavfi', '-i', `color=c=${color}:s=1024x576:d=1`, '-frames:v', '1', out]);
+  // 인물 셀을 '단색 초록/마젠타 배경' 으로 부탁받으면 그 배경 위에 인물(상자)만 그린다
+  const key = /#00FF00/.test(prompt) ? '0x00ff00' : /#FF00FF/.test(prompt) ? '0xff00ff' : null;
+  const vf = key ? ['-vf', `drawbox=x=420:y=150:w=180:h=330:color=${color}:t=fill`] : [];
+  execFileSync(ffmpeg, ['-loglevel', 'error', '-y', '-f', 'lavfi', '-i', `color=c=${key || color}:s=1024x576:d=1`, ...vf, '-frames:v', '1', out]);
 }
 
 if (/\$imagegen|image_gen|image generation/.test(prompt) && !/Return ONLY/.test(prompt)) {
@@ -44,9 +47,27 @@ let answer;
 if (/"exposure"/.test(prompt)) {
   // 타임시트: 지시문의 컷 목록을 읽어서, 일부러 프레임 합계가 안 맞는 노출표를 돌려준다 (PC 가 고쳐야 함)
   // 하이라이트는 번갈아 (짝수 번째 컷) — 컷이 2개뿐이어도 보통 컷과 하이라이트가 하나씩 나오게
-  const shots = [...prompt.matchAll(/- shot (\d+): .*?= (\d+) frames/g)].map((m, i) => ({ shot: Number(m[1]), frames: Number(m[2]), hl: i % 2 === 1 }));
+  // 지브리식/전체 움직임이면 컷 줄에 MOTION/HOLD 표시가 있다 → 움직이는 컷은 4장 순환 + 배경 판
+  const shots = [...prompt.matchAll(/- shot (\d+): .*?= (\d+) frames[^\n]*/g)].map((m, i) => {
+    const mm = /MOTION: \d+ key slots of (\d+) frames/.exec(m[0]);
+    return { shot: Number(m[1]), frames: Number(m[2]), hl: i % 2 === 1, motion: !!mm, unit: mm ? Number(mm[1]) : 0, marked: !!mm || / HOLD:/.test(m[0]) };
+  });
   answer = {
-    shots: shots.map((s, i) => (s.hl
+    shots: shots.map((s, i) => (s.marked ? (s.motion
+      ? {
+        shot: s.shot, motion: true, highlight: s.hl, characters: ['하루'], scene_en: 'rooftops in the rain at night',
+        bg: { prompt_en: 'wet rooftops at night, glowing windows, no people' },
+        drawings: ['A', 'B', 'C', 'D'].map((id, k) => ({ id, prompt_en: `Haru waving, the arm a little higher (key ${k + 1})` })),
+        exposure: [{ cycle: ['A', 'B', 'C', 'D'], each: s.unit, repeat: 99 }],
+        camera: { move: 'truck in' }, fx: [], transition_out: { type: 'cut', beats: 0 },
+      }
+      : {
+        shot: s.shot, motion: false, highlight: false, characters: ['하루'], scene_en: 'a quiet harbor at dusk', framing_en: 'wide shot',
+        bg: { prompt_en: 'a quiet harbor at dusk, no people' },
+        drawings: [{ id: '1', pose: 'Haru looks at the sea' }, { id: '2', pose: 'Haru turns and smiles' }],
+        exposure: ['1:30', ['2', 999]],
+        camera: { move: 'PAN-LEFT', start: { zoom: 1.0, x: 0.9 } }, fx: [], transition_out: { type: 'dissolve', beats: 1 },
+      }) : s.hl
       ? {
         shot: s.shot, highlight: true, characters: ['하루'], scene_en: 'rooftops in the rain at night',
         drawings: ['A', 'B', 'C', 'D', 'E', 'F', 'G'].map((id, k) => ({ id, prompt_en: `Haru running, step ${k + 1}` })),

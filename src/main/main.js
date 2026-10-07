@@ -18,6 +18,7 @@ const { DEFAULT_ART_STYLE, ART_PRESETS } = require('./defaults');
 const { REF_KIND_LABEL, MAX_REFS, normalizeCharacter } = require('./characters');
 const { renderSubtitlePngs } = require('./subtitles');
 const { ffmpegPath } = require('./media/ffmpeg');
+const { findRife } = require('./media/inbetween');
 
 // 테스트·휴대용 실행을 위한 경로 바꾸기 (일반 사용자는 신경 쓰지 않아도 됨)
 if (process.env.ANIMEMAKER_USERDATA) app.setPath('userData', process.env.ANIMEMAKER_USERDATA);
@@ -198,6 +199,7 @@ function registerIpc() {
     refKinds: REF_KIND_LABEL,
     maxRefs: MAX_REFS,
     cameraMoves: CAMERA_MOVES,
+    rife: (() => { const r = findRife(); return r ? { found: true, dir: r.dir } : { found: false }; })(),
   }));
   h('sys:openPath', (p) => shell.openPath(p));
   h('sys:showItem', (p) => { shell.showItemInFolder(p); return true; });
@@ -308,7 +310,7 @@ function registerIpc() {
   h('proj:skipWaiting', (id, key) => getRunner(id).skipWaiting(key));
   h('proj:continue', (id) => getRunner(id).continueReview());
   h('proj:regenerate', (id, kind, shot, opts) => getRunner(id).regenerate(kind, shot, opts || {}));
-  h('proj:replace', (id, kind, shot, file, drawingId) => { getRunner(id).replaceItem(kind, shot, file, drawingId); return true; });
+  h('proj:replace', async (id, kind, shot, file, drawingId) => { await getRunner(id).replaceItem(kind, shot, file, drawingId); return true; });
   h('proj:retime', (id, shot, index, frames) => getRunner(id).retime(shot, index, frames));
   h('proj:setCamera', (id, shot, move) => getRunner(id).setCamera(shot, move));
   h('proj:updatePlan', (id, plan) => { getRunner(id).updatePlan(plan); return true; });

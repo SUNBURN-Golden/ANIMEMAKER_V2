@@ -5,6 +5,8 @@ const os = require('os');
 const path = require('path');
 const { runFfmpeg } = require('../media/ffmpeg');
 const { DEFAULT_ART_STYLE } = require('../defaults');
+const { keyColorFor } = require('../media/keyer');
+const { keyFrames, motionSlots } = require('../pipeline/xsheet');
 
 const PALETTE = ['ff5e62', 'ff9966', 'f9d423', '7bc96f', '4facfe', '7c3aed', 'f472b6', '22d3ee', 'a3e635', 'fb7185', '60a5fa', 'fbbf24', '34d399', 'c084fc', 'f87171'];
 
@@ -41,21 +43,21 @@ const DEMO_LYRICS = `[Intro]
 const DEMO_CHARACTER = {
   name: '하루',
   personality_ko: '호기심 많고 씩씩한 열두 살 소녀. 겁이 나도 친구를 위해 먼저 손을 내민다.',
-  description_ko: '짧은 갈색 단발머리, 큰 갈색 눈, 빨간 목도리, 노란 우비, 초록 장화',
+  description_ko: '짧은 갈색 단발머리, 큰 갈색 눈, 빨간 목도리, 노란 우비, 갈색 장화',
   locked: {
     summary: 'a cheerful 12-year-old girl with a short brown bob, big round brown eyes and a long red scarf',
     face: 'round soft face, small nose, rosy cheeks, thick expressive eyebrows',
     hair: 'short chestnut-brown bob with straight bangs and one cowlick on top',
     eyes: 'large round warm-brown eyes with a single white highlight',
     body: 'small and slim, about 145 cm tall, child proportions (head about 1/5 of height)',
-    outfit: 'bright yellow raincoat with big round buttons, navy shorts, green rubber boots',
+    outfit: 'bright yellow raincoat with big round buttons, navy shorts, brown rubber boots',
     props: 'long red knitted scarf that always flutters behind her',
   },
   palette: [
     { name: 'scarf red', hex: '#d7263d' },
     { name: 'hair brown', hex: '#6b3e26' },
     { name: 'raincoat yellow', hex: '#f4c430' },
-    { name: 'boots green', hex: '#3a7d44' },
+    { name: 'boots brown', hex: '#7a4a2a' },
     { name: 'skin', hex: '#f6d5bf' },
   ],
   rules: { must: ['always wears the long red scarf', 'always wears the yellow raincoat'], never: ['never change hair color or hairstyle', 'never older than 12'] },
@@ -83,33 +85,50 @@ function demoPlan(topic, wf, series) {
   };
 }
 
+// 체험 배경 판의 장소 (인물 없이 장소만)
+const DEMO_PLACES = ['a narrow rainy alley at dusk, puddles and paper lanterns', 'wet rooftops under a deep blue night sky', 'a quiet harbor under the stars', 'tiled rooftops at sunrise, soft pink clouds'];
+
 /**
  * LLM 이 줄 법한 모양의 타임시트 (일부러 프레임 합계를 딱 맞추지 않고 '초' 와 '반복' 표기도 섞는다 → PC 가 고친다)
- * @param {{segments:object[], frames:number[], highlights:boolean[], alloc:number[], plan:object}} ctx
+ * 움직이는 컷은 열쇠 그림을 사이클로, 멈춤 컷은 그림 1~2장을 길게.
+ * @param {{segments:object[], frames:number[], highlights:boolean[], alloc:number[], plan:object, mode?:string, keyRate?:number, motion?:boolean[], layers?:boolean}} ctx
  */
 function demoXsheet(ctx) {
   const moves = ['zoom_in', 'pan_right', 'truck_in', 'pan_left', 'zoom_out', 'pan_up', 'hold'];
   const hero = (ctx.plan && ctx.plan.characters && ctx.plan.characters[0] && ctx.plan.characters[0].name) || 'the hero';
   const acts = (ctx.plan && ctx.plan.story) || [];
+  const motionMode = ctx.mode && ctx.mode !== 'limited';
+  const unit = keyFrames(ctx.keyRate);
   return {
     shots: ctx.segments.map((s, i) => {
-      const n = ctx.alloc[i] || 1;
-      const hl = ctx.highlights[i];
-      const act = acts[Math.min(acts.length - 1, Math.floor((i / ctx.segments.length) * acts.length))] || { visual_en: 'a rainy town' };
-      const ids = Array.from({ length: n }, (_, k) => String.fromCharCode(65 + k));
       const N = ctx.frames[i];
-      const exposure = hl
-        ? [{ cycle: ids, each: 2, repeat: Math.ceil(N / (2 * ids.length)) }]
-        : ids.map((d) => ({ drawing: d, seconds: Math.round((N / ids.length / 24) * 10) / 10 }));
+      const act = acts[Math.min(acts.length - 1, Math.floor((i / ctx.segments.length) * acts.length))] || { visual_en: 'a rainy town' };
+      const motion = motionMode && !!(ctx.motion && ctx.motion[i]);
+      const hl = ctx.highlights[i];
+      let ids;
+      let exposure;
+      if (motion) {
+        const slots = motionSlots(N, ctx.keyRate);
+        ids = Array.from({ length: Math.max(2, Math.min(6, slots)) }, (_, k) => String.fromCharCode(65 + k));
+        exposure = [{ cycle: ids, each: unit, repeat: Math.ceil(slots / ids.length) }];
+      } else {
+        const n = motionMode ? Math.min(2, Math.max(1, Math.round(N / 96))) : (ctx.alloc[i] || 1);
+        ids = Array.from({ length: n }, (_, k) => String.fromCharCode(65 + k));
+        exposure = !motionMode && hl
+          ? [{ cycle: ids, each: 2, repeat: Math.ceil(N / (2 * ids.length)) }]
+          : ids.map((d) => ({ drawing: d, seconds: Math.round((N / ids.length / 24) * 10) / 10 }));
+      }
       return {
         shot: s.index,
+        motion,
         highlight: hl,
         characters: [hero],
         scene_en: act.visual_en,
         framing_en: i % 2 ? 'medium shot' : 'wide shot',
-        drawings: ids.map((d, k) => ({ id: d, prompt_en: `${hero} ${hl ? `running pose ${k + 1}` : k ? 'turns and smiles' : 'looks up at the light'}` })),
+        bg: { prompt_en: DEMO_PLACES[Math.max(0, acts.indexOf(act)) % DEMO_PLACES.length] },
+        drawings: ids.map((d, k) => ({ id: d, prompt_en: motion ? `${hero} waving, key ${k + 1} of ${ids.length}: the arm a little further along the wave` : `${hero} ${k ? 'turns and smiles' : 'looks up at the light'}` })),
         exposure,
-        camera: { move: hl ? 'truck_in' : moves[i % moves.length] },
+        camera: { move: motion ? (i % 2 ? 'truck_in' : 'pan_right') : moves[i % moves.length] },
         fx: i === 0 ? ['fade_in'] : hl ? ['sparkle'] : [],
         transition_out: { type: ['cut', 'dissolve', 'cut', 'fade', 'cut', 'fadeblack'][i % 6], beats: i % 2 ? 1 : 0 },
       };
@@ -121,13 +140,13 @@ function hex(palette, i, d) {
   return String((palette && palette[i] && palette[i].hex) || d).replace('#', '');
 }
 
-/** 사람 모양 상자 그림 (몸·머리·머리카락·목도리·팔) */
-function figureBoxes(cx, by, u, pal, { arm = 0, scarf = 0 } = {}) {
+/** 사람 모양 상자 그림 (몸·머리·머리카락·목도리·팔·다리) */
+function figureBoxes(cx, by, u, pal, { arm = 0, scarf = 0, leg = 0 } = {}) {
   const r = (v) => Math.round(v);
   return [
     `drawbox=x=${r(cx - u * 0.5)}:y=${r(by)}:w=${r(u)}:h=${r(u * 1.9)}:color=0x${hex(pal, 2, '#f4c430')}:t=fill`,
-    `drawbox=x=${r(cx - u * 0.45)}:y=${r(by + u * 1.9)}:w=${r(u * 0.35)}:h=${r(u * 0.8)}:color=0x${hex(pal, 3, '#3a7d44')}:t=fill`,
-    `drawbox=x=${r(cx + u * 0.1)}:y=${r(by + u * 1.9)}:w=${r(u * 0.35)}:h=${r(u * 0.8)}:color=0x${hex(pal, 3, '#3a7d44')}:t=fill`,
+    `drawbox=x=${r(cx - u * 0.45 - leg * u * 0.2)}:y=${r(by + u * 1.9)}:w=${r(u * 0.35)}:h=${r(u * 0.8)}:color=0x${hex(pal, 3, '#7a4a2a')}:t=fill`,
+    `drawbox=x=${r(cx + u * 0.1 + leg * u * 0.2)}:y=${r(by + u * 1.9)}:w=${r(u * 0.35)}:h=${r(u * 0.8)}:color=0x${hex(pal, 3, '#7a4a2a')}:t=fill`,
     `drawbox=x=${r(cx - u * 0.42)}:y=${r(by - u * 0.85)}:w=${r(u * 0.84)}:h=${r(u * 0.85)}:color=0x${hex(pal, 4, '#f6d5bf')}:t=fill`,
     `drawbox=x=${r(cx - u * 0.48)}:y=${r(by - u * 0.95)}:w=${r(u * 0.96)}:h=${r(u * 0.35)}:color=0x${hex(pal, 1, '#6b3e26')}:t=fill`,
     `drawbox=x=${r(cx - u * 0.5)}:y=${r(by - u * 0.05)}:w=${r(u * (1 + scarf))}:h=${r(u * 0.25)}:color=0x${hex(pal, 0, '#d7263d')}:t=fill`,
@@ -161,6 +180,44 @@ async function demoDrawing({ shot = 1, index = 0, count = 1, highlight = false, 
     gradient: `gradients=s=${w}x${h}:c0=0x${c0}:c1=0x${c1}:x0=0:y0=0:x1=${w}:y1=${h}:d=1`,
     flat: `color=c=0x${c0}:s=${w}x${h}:d=1`,
   }, vf, out, signal);
+}
+
+/** 체험용 배경 그림 (BG plate): 하늘 · 언덕 · 해 · 나무, 인물 없음 */
+async function demoBg({ shot = 1, w = 1280, h = 720, out, signal }) {
+  const c0 = PALETTE[(shot * 3) % PALETTE.length];
+  const c1 = PALETTE[(shot * 3 + 5) % PALETTE.length];
+  const r = (v) => Math.round(v);
+  const vf = [
+    `drawbox=x=0:y=${r(h * 0.72)}:w=${w}:h=${r(h * 0.28)}:color=0x2f5d3a:t=fill`,
+    `drawbox=x=${r(w * 0.05)}:y=${r(h * 0.62)}:w=${r(w * 0.35)}:h=${r(h * 0.12)}:color=0x4a7d4f:t=fill`,
+    `drawbox=x=${r(w * 0.55)}:y=${r(h * 0.58)}:w=${r(w * 0.4)}:h=${r(h * 0.16)}:color=0x3e6e45:t=fill`,
+    `drawbox=x=${r(w * 0.76)}:y=${r(h * 0.1)}:w=${r(h * 0.13)}:h=${r(h * 0.13)}:color=0xfff4c2:t=fill`,
+    ...[0.12, 0.3, 0.68, 0.88].map((x, k) => `drawbox=x=${r(w * x)}:y=${r(h * (0.4 + 0.05 * (k % 2)))}:w=${r(w * 0.035)}:h=${r(h * 0.3)}:color=0x5a3d28:t=fill,drawbox=x=${r(w * (x - 0.03))}:y=${r(h * (0.3 + 0.05 * (k % 2)))}:w=${r(w * 0.095)}:h=${r(h * 0.14)}:color=0x2e7d32:t=fill`),
+  ].join(',');
+  return lavfiImage({
+    gradient: `gradients=s=${w}x${h}:c0=0x${c0}:c1=0x${c1}:x0=0:y0=0:x1=0:y1=${h}:d=1`,
+    flat: `color=c=0x${c0}:s=${w}x${h}:d=1`,
+  }, vf, out, signal);
+}
+
+/**
+ * 체험용 인물 셀: 단색(크로마키) 배경 위에 인물만. 움직이는 컷은 열쇠 그림마다 팔·다리·몸이 조금씩 움직인다.
+ * @param {{index:number, count:number, motion:boolean, keyColor?:string, palette?:object[]}} o
+ */
+async function demoCel({ shot = 1, index = 0, count = 1, motion = false, keyColor, palette = [], w = 1280, h = 720, out, signal }) {
+  const key = String(keyColor || keyColorFor(palette)).replace('#', '');
+  const u = Math.min(w, h) / 7;
+  // 반 칸 어긋난 위상: 이웃한 열쇠 그림끼리 늘 조금씩 다르다 (같은 자세가 두 번 이어지지 않게)
+  const ang = count > 1 ? ((index + 0.5) / count) * Math.PI * 2 : 0;
+  const cx = w * (0.48 + (motion ? 0.012 * Math.sin(ang) : 0.02 * index)) + (shot % 3) * w * 0.03;
+  const by = h * 0.36 - (motion ? u * 0.1 * Math.abs(Math.cos(ang)) : 0);
+  const vf = figureBoxes(cx, by, u, palette, {
+    arm: motion ? 0.35 + 0.4 * Math.sin(ang) : (index % 2) * 0.5,
+    leg: motion ? 0.8 * Math.cos(ang) : 0,
+    scarf: motion ? 0.25 + 0.15 * Math.cos(ang) : 0.2,
+  }).join(',');
+  await runFfmpeg(['-y', '-f', 'lavfi', '-i', `color=c=0x${key}:s=${w}x${h}:d=1`, '-vf', vf, '-frames:v', '1', out], { signal });
+  return out;
 }
 
 /** 체험용 캐릭터 기준 그림 (턴어라운드 4면 · 표정 6개 · 전신) */
@@ -243,4 +300,4 @@ async function createDemoSeries(store, { signal } = {}) {
   }
 }
 
-module.exports = { DEMO_LYRICS, DEMO_CHARACTER, demoPlan, demoXsheet, demoDrawing, demoCharacterRef, demoImage, demoMusic, createDemoSeries };
+module.exports = { DEMO_LYRICS, DEMO_CHARACTER, demoPlan, demoXsheet, demoDrawing, demoBg, demoCel, demoCharacterRef, demoImage, demoMusic, createDemoSeries };
