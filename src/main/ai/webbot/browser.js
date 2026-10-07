@@ -87,7 +87,10 @@ class BotBrowser {
     if (o.headless) args.push('--headless=new');
     if (o.extraArgs) args.push(...o.extraArgs);
     args.push(o.startUrl || 'about:blank');
-    this.proc = spawn(exe, args, { stdio: 'ignore', windowsHide: false, detached: false });
+    this.proc = spawn(exe, args, { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: false, detached: false });
+    // 브라우저가 남기는 메시지는 마지막 부분만 들고 있다가, 안 켜질 때 원인을 알 수 있게 오류에 붙인다
+    this.log = '';
+    this.proc.stderr.on('data', (d) => { this.log = (this.log + d).slice(-4000); });
     this.port = 0;
     const until = Date.now() + (o.startTimeoutMs || 60000);
     let ok = false;
@@ -107,9 +110,11 @@ class BotBrowser {
     if (!ok) {
       const exited = this.proc.exitCode !== null;
       try { if (!exited) this.proc.kill(); } catch (_) { /* noop */ }
-      throw new Error(exited
+      const e = new Error(exited
         ? '자동 클릭용 브라우저를 열지 못했습니다. 같은 프로필의 브라우저 창이 이미 열려 있다면 닫고 다시 시도하세요.'
         : '자동 클릭용 브라우저가 1분 안에 준비되지 않았습니다. 컴퓨터가 바쁘면 잠시 뒤 다시 시도하세요.');
+      e.browserLog = this.log;
+      throw e;
     }
     this.browser = await pw().connectOverCDP(`http://127.0.0.1:${this.port}`);
     this.context = this.browser.contexts()[0] || await this.browser.newContext();
@@ -124,8 +129,13 @@ class BotBrowser {
   }
 
   async close() {
+    const p = this.proc;
     try { if (this.browser) await this.browser.close(); } catch (_) { /* noop */ }
-    try { if (this.proc && this.proc.exitCode === null) this.proc.kill(); } catch (_) { /* noop */ }
+    try { if (p && p.exitCode === null) p.kill(); } catch (_) { /* noop */ }
+    // 같은 프로필로 바로 다시 열 수 있게, 브라우저가 완전히 끝날 때까지 잠깐(최대 5초) 기다린다
+    if (p && p.exitCode === null && p.signalCode === null) {
+      await new Promise((r) => { const t = setTimeout(r, 5000); p.once('exit', () => { clearTimeout(t); r(); }); });
+    }
     this.browser = null;
     this.context = null;
     this.proc = null;

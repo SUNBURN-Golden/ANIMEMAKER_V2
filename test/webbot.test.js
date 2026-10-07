@@ -28,7 +28,7 @@ function go(){ const t=document.getElementById('box').innerText; const n=documen
       : '<img src="/gen.png?'+Date.now()+'" width=300 height=400><button aria-label="Download" onclick="location.href=\\'/dl\\'">dl</button>'); }, 1500); }
 </script></body></html>`;
 
-test('recipe runner: upload, fill, submit, wait, save (src + download button)', { skip: browser ? false : '브라우저 없음', timeout: 180000 }, async () => {
+test('recipe runner: upload, fill, submit, wait, save (src + download button)', { skip: browser ? false : '브라우저 없음', timeout: 180000 }, async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'am-bot-'));
   const ff = ffmpegPath();
   execFileSync(ff, ['-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=s=600x800:d=1', '-frames:v', '1', path.join(dir, 'gen.png')]);
@@ -43,7 +43,10 @@ test('recipe runner: upload, fill, submit, wait, save (src + download button)', 
   const base = `http://127.0.0.1:${srv.address().port}/`;
   const bb = new BotBrowser();
   try {
-    await bb.ensure({ profileDir: path.join(dir, 'profile'), headless: true, extraArgs: ['--no-sandbox'] });
+    await bb.ensure({ profileDir: path.join(dir, 'profile'), headless: true, extraArgs: ['--no-sandbox'] }).catch((e) => {
+      t.diagnostic(`browser: ${browser}\nbrowser stderr (last part):\n${e.browserLog || '(없음)'}`); // 안 켜지면 원인을 남긴다
+      throw e;
+    });
     const page = await bb.page();
     const out = path.join(dir, 'out');
     fs.mkdirSync(out);
