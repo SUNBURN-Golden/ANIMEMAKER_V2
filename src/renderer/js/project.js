@@ -390,48 +390,24 @@
 
   function tapSyncDialog(snap, inReview) {
     const t = snap.timing;
-    const lines = (t.lyrics && t.lyrics.length ? t.lyrics : []).map((l) => ({ ...l }));
+    const lines = t.lyrics && t.lyrics.length ? t.lyrics : [];
     if (!lines.length) { toast('가사가 없어요.', 'err'); return; }
-    const D = snap.music.analysis.duration;
-    const marks = lines.map((l) => l.start);
-    let idx = 0;
-    const audio = h('audio', { controls: true, src: url(snap, snap.music.song), style: { width: '100%' } });
-    const progress = h('span', { class: 'small muted' });
-    const rate = h('select', { style: { width: '120px' }, onchange: () => { audio.playbackRate = Number(rate.value); } },
-      h('option', { value: '1' }, '보통 속도'), h('option', { value: '0.75' }, '0.75배 느리게'), h('option', { value: '0.5' }, '0.5배 느리게'));
-    const list = h('div', { class: 'tap-lines' });
-    const render = () => {
-      clear(list);
-      lines.forEach((l, i) => list.appendChild(h('div', { class: `tap-line ${i === idx ? 'cur' : ''}` },
-        h('span', { class: 'tm' }, i < idx ? marks[i].toFixed(2) : (i === idx ? '▶' : marks[i].toFixed(2))), l.text)));
-      const c = list.children[idx];
-      if (c) c.scrollIntoView({ block: 'nearest' });
-      progress.textContent = `${Math.min(idx, lines.length)} / ${lines.length} 줄`;
-    };
-    const onKey = (e) => {
-      if (e.code === 'Space') {
-        e.preventDefault();
-        if (idx < lines.length) { marks[idx] = Math.max(0, audio.currentTime - 0.12 * audio.playbackRate); idx++; render(); }
-      } else if (e.code === 'Backspace') {
-        e.preventDefault();
-        if (idx > 0) { idx--; render(); }
-      }
-    };
-    document.addEventListener('keydown', onKey);
-    render();
-    AM.modal('⌨ 탭으로 가사 맞추기', h('div', null,
-      h('p', null, '노래를 재생하고, 각 가사 줄이 ', h('b', null, '시작되는 순간'), '에 ', h('span', { class: 'kbd' }, 'Space'), ' 를 누르세요. 틀리면 ', h('span', { class: 'kbd' }, 'Backspace'), ' 로 한 줄 되돌려요.'),
-      h('div', { class: 'row' }, h('button', { class: 'btn', onclick: () => { idx = 0; audio.currentTime = 0; audio.play(); render(); } }, '⏮ 처음부터 맞추기'), rate, progress),
-      h('div', { style: { margin: '10px 0' } }, audio),
-      list), [
+    const root = document.getElementById('modal-root');
+    const ls = window.AMLyricSync.mount({
+      lines,
+      duration: snap.music.analysis.duration,
+      src: url(snap, snap.music.song),
+      confirmed: ['tap', 'lrc', 'srt'].includes(t.lyricsSource),
+      isActive: () => !!root.lastElementChild && root.lastElementChild.contains(ls.el), // 확인 창이 위에 뜨면 키보드 쉬기
+    });
+    AM.modal('⌨ 탭으로 가사 맞추기', ls.el, [
       { label: '취소' },
       {
         label: '💾 저장', kind: 'primary',
         onClick: async () => {
-          for (let i = 1; i < marks.length; i++) if (marks[i] <= marks[i - 1]) { toast(`${i + 1}번째 줄 시간이 앞 줄보다 빨라요. 다시 맞춰 주세요.`, 'err'); return true; }
-          if (idx < lines.length && !await AM.confirmBox('아직 다 안 맞췄어요', `${lines.length}줄 중 ${idx}줄만 맞췄어요. 나머지 줄은 원래 시간으로 저장할까요?`, '그대로 저장')) return true;
-          const out = lines.map((l, i) => ({ text: l.text, part: l.part, section: l.section, sectionStart: l.sectionStart, start: marks[i], end: Math.min(i + 1 < marks.length ? marks[i + 1] - 0.05 : D - 0.1, marks[i] + 7) }));
-          const ok = await AM.safe(() => window.api.updateLyrics(snap.id, out), '가사 타이밍을 저장했어요');
+          const left = ls.untapped();
+          if (left && !await AM.confirmBox('아직 다 안 맞췄어요', `${lines.length}줄 중 ${left}줄은 아직 "예상" 시간이에요. 그대로 저장할까요?`, '그대로 저장')) return true;
+          const ok = await AM.safe(() => window.api.updateLyrics(snap.id, ls.result()), '가사 타이밍을 저장했어요');
           if (ok === undefined) return true;
           if (inReview) { window.api.continueReview(snap.id); return false; }
           const subsOnly = await AM.confirmBox('어떻게 반영할까요?', '• 자막만 다시 입히기: 그림·렌더링은 그대로, 완성 영상의 자막만 새 타이밍으로 (빠름)\n• 컷도 다시 나누기: 새 가사 타이밍에 맞춰 컷 경계부터 다시 (타임시트·그림을 다시 만들 수 있어요)', '💬 자막만 다시 입히기');
@@ -440,7 +416,7 @@
           return false;
         },
       },
-    ], { width: 'min(760px, 94vw)', sticky: true, onClose: () => { document.removeEventListener('keydown', onKey); audio.pause(); } });
+    ], { width: 'min(820px, 96vw)', sticky: true, onClose: () => ls.destroy() });
   }
 
   // ---------- 타임시트 탭 ----------

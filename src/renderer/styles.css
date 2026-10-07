@@ -218,11 +218,6 @@ details.adv summary { cursor: pointer; color: var(--muted); font-size: 13px; }
 .toast.err { background: var(--err); }
 .toast.ok { background: var(--ok); }
 
-.tap-lines { max-height: 46vh; overflow: auto; border: 1px solid var(--line); border-radius: 12px; }
-.tap-line { display: flex; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--line); align-items: center; }
-.tap-line.cur { background: var(--primary-soft); font-weight: 700; }
-.tap-line .tm { width: 70px; color: var(--muted); font-family: Consolas, monospace; font-size: 12.5px; }
-.kbd { display: inline-block; border: 1px solid #cfcbe0; border-bottom-width: 3px; border-radius: 6px; padding: 0 7px; font-size: 12px; background: #fff; }
 .help h3 { margin-top: 22px; }
 .help ol li, .help ul li { margin: 4px 0; }
 
