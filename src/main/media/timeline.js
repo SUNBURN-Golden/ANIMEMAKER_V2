@@ -1,5 +1,5 @@
 'use strict';
-// 타이밍 설계: 가사 줄 타이밍 추정, 박자/마디에 맞춘 컷 나누기, 화면전환 길이 계산.
+// 타이밍 설계: 가사 줄 타이밍 추정, 박자/마디에 맞춘 컷(샷) 나누기, 화면전환 길이 계산.
 
 const TRANSITIONS = {
   cut: { label: '컷 (바로 전환)', xfade: null },
@@ -186,6 +186,7 @@ function decorate(bounds, analysis, lyrics, parts) {
       lyrics: lyr,
       part,
       energy: energy > 0.75 ? 'high' : energy > 0.45 ? 'mid' : 'low',
+      level: round3(energy),
     };
   });
 }
@@ -211,18 +212,6 @@ function resolveTransitions(segments, shots, beatPeriod) {
     res.push({ type, xfade: TRANSITIONS[type].xfade, duration: round3(dur) });
   }
   return res;
-}
-
-/** 각 클립이 실제로 필요로 하는 길이 (전환 겹침 포함) 와 영상 생성 요청 길이 */
-function clipNeeds(segments, transitions) {
-  return segments.map((seg, i) => {
-    const before = i > 0 ? transitions[i - 1].duration / 2 : 0;
-    const after = i < transitions.length ? transitions[i].duration / 2 : 0;
-    const need = seg.duration + before + after;
-    // 영상 AI 는 한 번에 15초까지라서, 그보다 길면 이어 붙여 만든다 (runner 참고)
-    const request = Math.max(1, Math.ceil(need + 0.4));
-    return { need: round3(need), lead: round3(before), request };
-  });
 }
 
 function toSrtTime(t) {
@@ -253,5 +242,5 @@ function round2(x) { return Math.round(x * 100) / 100; }
 function round3(x) { return Math.round(x * 1000) / 1000; }
 
 module.exports = {
-  TRANSITIONS, syllables, estimateLyricTiming, segmentSong, resolveTransitions, clipNeeds, toSrt, toLrc,
+  TRANSITIONS, syllables, estimateLyricTiming, segmentSong, resolveTransitions, toSrt, toLrc,
 };
