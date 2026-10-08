@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- V2 아이콘 색 (하늘색 → 보라). 라이브러리 기본 색을 덮어쓴다 -->
+    <color name="colorPrimary">#4A52E5</color>
+    <color name="colorPrimaryDark">#3A3FC0</color>
+    <color name="colorAccent">#FF5C69</color>
+    <!-- 안드로이드 12+ 시작 화면 바탕 (아이콘 가운데 색) -->
+    <color name="am_splash_bg">#4A52E5</color>
+    <!-- 창 배경 (WebView 가 그려지기 전 · 오래된 WebView 의 시스템 바 자리) -->
+    <color name="am_window_bg">#4A52E5</color>
+</resources>

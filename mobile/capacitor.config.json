@@ -1,0 +1,10 @@
+{
+  "appId": "com.animemaker.v2",
+  "appName": "AnimeMaker V2",
+  "webDir": "www",
+  "android": {
+    "allowMixedContent": false,
+    "captureInput": true,
+    "webContentsDebuggingEnabled": false
+  }
+}

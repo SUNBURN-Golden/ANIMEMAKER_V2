@@ -1,0 +1,12 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">AnimeMaker V2</string>
+    <string name="title_activity_main">AnimeMaker V2</string>
+    <string name="package_name">com.animemaker.v2</string>
+    <string name="custom_url_scheme">com.animemaker.v2</string>
+    <string name="job_channel_name">AnimeMaker V2 작업</string>
+    <string name="job_channel_desc">영상을 만드는 동안 진행 상황을 보여 줘요</string>
+    <string name="job_default_title">AnimeMaker V2</string>
+    <string name="job_default_text">작업하는 중이에요</string>
+    <string name="chooser_title">보낼 앱 고르기</string>
+</resources>

@@ -1,0 +1,29 @@
+{
+  "name": "animemaker-v2-mobile",
+  "version": "2.0.0",
+  "private": true,
+  "description": "AnimeMaker V2 안드로이드 앱 (폰 혼자 다 하는 쉬운 V2)",
+  "license": "UNLICENSED",
+  "scripts": {
+    "build": "node build.mjs",
+    "build:dev": "node build.mjs --dev",
+    "sync": "node build.mjs && cap sync android",
+    "apk": "node build.mjs && cap sync android && cd android && ./gradlew assembleRelease",
+    "test": "node --test --test-concurrency=1 \"test/*.test.js\""
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.5.2",
+    "@capacitor/app": "^8.1.2",
+    "@capacitor/clipboard": "^8.0.1",
+    "@capacitor/core": "^8.5.2",
+    "@capacitor/filesystem": "^8.1.4",
+    "mediabunny": "^1.61.3"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.5.2",
+    "esbuild": "^0.28.2",
+    "fake-indexeddb": "^6.0.0",
+    "playwright-core": "^1.63.0"
+  },
+  "type": "module"
+}
