@@ -287,9 +287,12 @@ H.untilDone = async (name, id, key, ms = 15000) => {
 
 H.guardBackDuringRender = async ({ name = 'main', id, choice }) => {
   const engine = H.eng(name);
-  for (let i = 0; i < 2000; i++) {
+  // 느린 러너(CI)에서는 '영상 만들기' 단계에 닿기까지 오래 걸릴 수 있다: 시간 제한은 넉넉히, 그리고 실제로 지킴이가 붙든 일이 보일 때까지 기다린다
+  const until = Date.now() + 180000;
+  for (;;) {
     const s = engine.projects.peek(id);
-    if (s && s.currentStep === 'render' && s.status === 'running') break;
+    if (s && s.currentStep === 'render' && s.status === 'running' && jobs.listJobs().some((j) => j.modal)) break;
+    if (Date.now() > until) break;
     await sleep(5);
   }
   const g = await jobs.guardBack({ ask: async () => choice === 'stop' });

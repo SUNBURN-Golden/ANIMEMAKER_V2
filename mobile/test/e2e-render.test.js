@@ -291,9 +291,11 @@ test('자막 입히기(16:9): 소리는 그대로 복사, 프레임 수 같음, 
   for (const [t0, label] of [[4.0, '1번 줄'], [7.5, '2번 줄'], [12.0, '3번 줄(긴 줄)'], [20.5, '5번 줄']]) {
     const d = await ev(([x]) => window.T.diffFrames('clean', 'final', x, 60), [t0]);
     assert.ok(d.count > 150, `${label}: 글자가 보여야 해요 (${d.count})`);
-    assert.ok(d.bbox.x0 >= safe.x - 2 && d.bbox.x1 <= safe.x + safe.w + 2 && d.bbox.y0 >= safe.y - 2 && d.bbox.y1 <= safe.y + safe.h + 2, `${label}: 글자 상자 ${JSON.stringify(d.bbox)} 가 안전영역 ${JSON.stringify([safe.x, safe.y, safe.w, safe.h])} 안`);
+    // 글씨 자리는 '촘촘히 달라진 곳(core)'으로 잰다: 다시 인코딩한 잡음(H.264)은 먼 곳에도 흩어져 생긴다
+    const box = d.core || d.bbox;
+    assert.ok(box.x0 >= safe.x - 2 && box.x1 <= safe.x + safe.w + 2 && box.y0 >= safe.y - 2 && box.y1 <= safe.y + safe.h + 2, `${label}: 글자 상자 ${JSON.stringify(box)} (전체 ${JSON.stringify(d.bbox)}) 가 안전영역 ${JSON.stringify([safe.x, safe.y, safe.w, safe.h])} 안`);
     // 글자는 아래쪽에 앉는다
-    assert.ok(d.bbox.y0 > 540 * 0.6, `${label}: 아래쪽 ${d.bbox.y0}`);
+    assert.ok(box.y0 > 540 * 0.6, `${label}: 아래쪽 ${box.y0}`);
   }
   // 줄이 없는 시각(5.8초 · 숨긴 줄 16초 · 24초)은 깨끗한 원본과 거의 같다
   for (const t0 of [1.0, 5.8, 16.0, 24.5]) {
@@ -335,7 +337,8 @@ test('세로(9:16) 영상: 540×960 내보내기와 자막(shorts 모양)이 안
   assert.ok(safe.y + safe.h <= 960 * 0.77, `안전영역 아래 여백 ${safe.y + safe.h}`);
   const d = await ev(() => window.T.diffFrames('tall', 'tallfinal', 3, 60));
   assert.ok(d.count > 150);
-  assert.ok(d.bbox.x0 >= safe.x - 2 && d.bbox.x1 <= safe.x + safe.w + 2 && d.bbox.y0 >= safe.y - 2 && d.bbox.y1 <= safe.y + safe.h + 2, `글자 상자 ${JSON.stringify(d.bbox)} 가 안전영역 ${JSON.stringify([safe.x, safe.y, safe.w, safe.h])} 안`);
+  const box = d.core || d.bbox;
+  assert.ok(box.x0 >= safe.x - 2 && box.x1 <= safe.x + safe.w + 2 && box.y0 >= safe.y - 2 && box.y1 <= safe.y + safe.h + 2, `글자 상자 ${JSON.stringify(box)} (전체 ${JSON.stringify(d.bbox)}) 가 안전영역 ${JSON.stringify([safe.x, safe.y, safe.w, safe.h])} 안`);
   const bb = await ev(() => window.T.readVideo('tallfinal'));
   assert.strictEqual(bb.packets, v.packets);
   const sheet = [
