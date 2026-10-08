@@ -116,7 +116,7 @@ function finishFilters(finish = {}) {
 async function assembleAnimation(p) {
   const { shots, transitions, song, totalFrames, w, h, out, signal, onProgress } = p;
   const finish = p.finish || {};
-  freeOutput(out, ...shots.map((x) => x.file)); // 완성본이 이 파일과 하드링크로 묶여 있어도 안전하게
+  const tmp = partFile(out); // 새 영상은 임시 이름으로 만들고 다 끝나면 바꾼다: 도중에 멈춰도 예전 영상이 그대로 남는다
   const total = totalFrames / FPS;
   const args = ['-y'];
   shots.forEach((s) => args.push('-i', s.file));
@@ -162,16 +162,27 @@ async function assembleAnimation(p) {
   if (song) args.push('-map', '[aout]', '-c:a', 'aac', '-b:a', '192k');
   args.push('-c:v', 'libx264', '-preset', 'fast', '-crf', '18', '-r', String(FPS), '-pix_fmt', 'yuv420p',
     '-frames:v', String(totalFrames), '-movflags', '+faststart',
-    '-metadata', 'comment=Made with AI (AnimeMaker V2)', '-metadata', 'description=AI-generated content', out);
-  await runFfmpeg(args, { signal, onProgress: onProgress ? (s) => onProgress(Math.min(1, s / total)) : undefined });
+    '-metadata', 'comment=Made with AI (AnimeMaker V2)', '-metadata', 'description=AI-generated content', tmp);
+  try {
+    await runFfmpeg(args, { signal, onProgress: onProgress ? (s) => onProgress(Math.min(1, s / total)) : undefined });
+    swapIn(tmp, out);
+  } catch (e) {
+    discard(tmp);
+    throw e;
+  }
   return out;
 }
 
-/** 출력 파일을 쓰기 전에 지운다: 자막을 끈 에피소드는 완성본이 깨끗한 원본과 하드링크로 같은 파일이라, 그대로 덮어쓰면 원본이 망가진다 */
-function freeOutput(out, ...others) {
-  const o = path.resolve(out);
-  if (others.some((x) => x && path.resolve(x) === o)) return;
+/** 임시 출력 이름 (같은 폴더, 확장자는 .mp4 로 끝나야 ffmpeg 가 mp4 로 만든다) */
+function partFile(out) { return `${out}.part.mp4`; }
+function discard(f) { try { fs.unlinkSync(f); } catch (_) { /* 없으면 괜찮다 */ } }
+/**
+ * 다 만든 임시 파일을 진짜 이름으로 바꾼다. 예전 파일은 이름만 지우므로, 자막을 끈 에피소드처럼
+ * 완성본이 깨끗한 원본과 하드링크로 같은 파일이어도 원본은 그대로 남는다.
+ */
+function swapIn(tmp, out) {
   try { fs.unlinkSync(out); } catch (_) { /* 없으면 괜찮다 */ }
+  fs.renameSync(tmp, out);
 }
 
 /**
@@ -189,7 +200,7 @@ async function burnSubtitles(p, opts = {}) {
   const preset = opts.preset || p.preset || 'veryfast';
   const crf = opts.crf ?? p.crf ?? 18;
   const subs = (p.subtitlePngs || []).filter((s) => s && !s.hidden && s.file);
-  freeOutput(out, video);
+  const tmp = partFile(out); // 임시 이름으로 만들고 끝나면 바꾼다 (멈춰도 예전 영상이 남는다)
   const args = ['-y', '-i', video];
   // 자막 그림은 자기가 보이는 동안만 읽는다 (빠름)
   subs.forEach((s) => args.push('-loop', '1', '-framerate', String(FPS), '-t', Math.max(0.05, s.end - s.start).toFixed(3), '-i', s.file));
@@ -229,12 +240,18 @@ async function burnSubtitles(p, opts = {}) {
   f.push(`[${cur}]format=yuv420p[vout]`);
   args.push('-filter_complex', f.join(';'), '-map', '[vout]', '-map', '0:a?', '-c:a', 'copy',
     '-c:v', 'libx264', '-preset', preset, '-crf', String(crf), '-r', String(FPS), '-pix_fmt', 'yuv420p', '-movflags', '+faststart',
-    '-metadata', 'comment=Made with AI (AnimeMaker V2)', '-metadata', 'description=AI-generated content', out);
-  await runFfmpeg(args, {
-    signal,
-    cwd,
-    onProgress: onProgress ? (s) => onProgress(Math.min(1, s / total)) : undefined,
-  });
+    '-metadata', 'comment=Made with AI (AnimeMaker V2)', '-metadata', 'description=AI-generated content', tmp);
+  try {
+    await runFfmpeg(args, {
+      signal,
+      cwd,
+      onProgress: onProgress ? (s) => onProgress(Math.min(1, s / total)) : undefined,
+    });
+    swapIn(tmp, out);
+  } catch (e) {
+    discard(tmp);
+    throw e;
+  }
   return out;
 }
 
