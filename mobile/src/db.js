@@ -11,6 +11,7 @@
 //
 // 전부 비동기(약속). 저장소가 꽉 차면 StorageError(quota:true) 로 알기 쉬운 한국어 메시지를 준다.
 
+import { josa } from './josa.js';
 export const DB_NAME = 'animemaker-v2';
 export const DB_VERSION = 1;
 export const STORES = Object.freeze(['meta', 'characters', 'series', 'projects', 'drawings', 'files', 'inbox']);
@@ -330,7 +331,7 @@ export async function listFileKeys(prefix = '') {
 
 function recordApi(store, label) {
   const check = (r) => {
-    if (!r || typeof r !== 'object') throw new Error(`${label}이(가) 필요해요`);
+    if (!r || typeof r !== 'object') throw new Error(`${label}${josa(label, '이/가')} 필요해요`);
     needString(r.id, `${label}의 id`);
   };
   return {

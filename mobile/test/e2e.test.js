@@ -54,7 +54,7 @@ after(async () => {
   if (srv) srv.close();
 });
 
-async function open(t, { path: p = '', init } = {}) {
+async function open(t, { path: p = '', init, welcome = false } = {}) {
   const ctx = await browser.newContext({ viewport: { width: 412, height: 915 }, deviceScaleFactor: 1, locale: 'ko-KR' });
   const page = await ctx.newPage();
   const errors = [];
@@ -66,6 +66,10 @@ async function open(t, { path: p = '', init } = {}) {
   await page.goto(base + p);
   await page.evaluate(() => window.AnimeMaker.ready);
   t.after(() => ctx.close());
+  if (!welcome) { // 처음 켠 환영 화면은 e2e-app.test.js 가 본다. 여기서는 환영을 넘기고 만들기 탭에서 시작한다
+    await page.evaluate(async () => { await window.AnimeMaker.app.setPref('welcomed', true); window.AnimeMaker.app.go('home'); });
+    await page.waitForSelector('.tabs');
+  }
   return { page, errors };
 }
 
@@ -80,13 +84,11 @@ const noErrors = (errors) => assert.deepStrictEqual(errors, []);
 /** 안드로이드 뒤로가기 버튼처럼: 결과를 기다리지 않는다 (질문 창이 뜨면 app.back() 은 대답을 받을 때까지 끝나지 않는다) */
 const pressBack = (page) => page.evaluate(() => { window.AnimeMaker.app.back(); });
 
-test('시작: 앱이 뜨고 "AnimeMaker V2" 시작 화면, 저장소 열림, 점검 카드, 콘솔 오류 0', { skip, timeout: 60000 }, async (t) => {
-  const { page, errors } = await open(t);
+test('시작: 앱이 뜨고 "AnimeMaker V2" 환영 화면, 저장소 열림, 설정의 점검 카드, 콘솔 오류 0', { skip, timeout: 60000 }, async (t) => {
+  const { page, errors } = await open(t, { welcome: true });
   assert.strictEqual(await page.title(), 'AnimeMaker V2');
-  assert.strictEqual(await page.textContent('header.top .top-title'), 'AnimeMaker V2');
   assert.strictEqual(await page.textContent('main .hero h1'), 'AnimeMaker V2');
-  assert.match(await page.textContent('#btn-new'), /만들기/);
-  assert.ok(await page.evaluate(() => document.querySelector('header .logo').naturalWidth > 0), '로고(V2 아이콘)가 보여요');
+  assert.match(await page.textContent('#btn-tour'), /먼저 구경하기/);
   assert.ok(await page.evaluate(() => document.querySelector('main .hero img').naturalWidth > 0));
   // 저장소: 이름 animemaker-v2, 일곱 개 창고
   const dbs = await page.evaluate(() => indexedDB.databases());
@@ -96,7 +98,10 @@ test('시작: 앱이 뜨고 "AnimeMaker V2" 시작 화면, 저장소 열림, 점
   // 처음 켰을 때 저장 공간 보호를 한 번 요청해서 결과를 적어 둔다
   const persist = await page.evaluate(() => window.AnimeMaker.db.getMeta('persist'));
   assert.strictEqual(typeof persist.granted, 'boolean');
-  // 내 폰 점검 카드
+  // 내 폰 점검 카드 (설정 탭)
+  await page.evaluate(() => window.AnimeMaker.app.go('settings'));
+  assert.strictEqual(await page.textContent('header.top .top-title'), 'AnimeMaker V2');
+  assert.ok(await page.evaluate(() => document.querySelector('header .logo').naturalWidth > 0), '로고(V2 아이콘)가 보여요');
   await page.waitForSelector('.probe-card[data-state="done"]', { timeout: 20000 });
   assert.match(await page.textContent('.probe-card h3'), /내 폰 점검/);
   assert.match(await page.getAttribute('.probe-card', 'data-level'), /^(good|warn|bad)$/);
@@ -135,17 +140,20 @@ test('배포용(줄인) 묶음도 똑같이 뜬다: 제목 · 점검 카드 · �
   page.on('response', (r) => { if (r.status() >= 400) errors.push(`HTTP ${r.status()} ${r.url()}`); });
   await page.goto(`http://127.0.0.1:${server.address().port}/`);
   await page.evaluate(() => window.AnimeMaker.ready);
+  assert.strictEqual(await page.textContent('main .hero h1'), 'AnimeMaker V2');
+  await page.evaluate(() => window.AnimeMaker.app.go('settings'));
   assert.strictEqual(await page.textContent('header.top .top-title'), 'AnimeMaker V2');
   await page.waitForSelector('.probe-card[data-state="done"]', { timeout: 20000 });
   assert.deepStrictEqual((await page.evaluate(() => indexedDB.databases())).map((d) => d.name), ['animemaker-v2']);
   assert.ok(!(await page.evaluate(() => document.querySelector('script[src="app.js"]') === null)));
-  assert.ok((fs.statSync(path.join(prodDir, 'app.js')).size) < 200 * 1024, '배포용 app.js 는 줄여져 있다');
+  assert.ok((fs.statSync(path.join(prodDir, 'app.js')).size) < 1.5 * 1024 * 1024, '배포용 app.js 는 줄여져 있다 (엔진까지 들어가서 1.5MB 아래: bundle-guard 와 같은 상한)');
   noErrors(errors);
 });
 
 test('설정: AI 앱·화질을 바꾸면 localStorage(am2.settings)와 저장소 meta 에 남고, 뒤로가기로 돌아온다', { skip, timeout: 60000 }, async (t) => {
   const { page, errors } = await open(t);
-  await page.click('header .icon-btn[aria-label="설정"]');
+  await page.click('.tabs [data-tab="settings"]');
+  await page.click('#dev-adv summary'); // 고급 접기 안의 AI 앱 · 화질 칩
   await page.waitForSelector('.chips[data-kind="text"]');
   await page.click('.chips[data-kind="text"] .chip[data-app="gemini"]');
   await page.click('.chips[data-kind="quality"] .chip[data-quality="1080p"]');
@@ -157,7 +165,7 @@ test('설정: AI 앱·화질을 바꾸면 localStorage(am2.settings)와 저장�
   assert.match(await page.textContent('#app-info'), /AnimeMaker V2 2\.0\.0/);
   await shot(page, '02_settings');
   await pressBack(page);
-  await page.waitForSelector('#btn-new');
+  await page.waitForSelector('.tabs [data-tab="home"].on');
   // 새로고침해도 설정이 그대로
   await page.reload();
   await page.evaluate(() => window.AnimeMaker.ready);
@@ -172,14 +180,15 @@ test('설정: AI 앱·화질을 바꾸면 localStorage(am2.settings)와 저장�
 
 test('작품 만들기 → 마지막 작품 기억 → 새로고침해도 목록·기다림(expecting)이 남는다', { skip, timeout: 60000 }, async (t) => {
   const { page, errors } = await open(t);
-  await page.click('#btn-new');
+  const id = await openNewProject(page);
   await page.waitForSelector('#project-placeholder');
-  const id = await page.evaluate(() => window.AnimeMaker.app.params.id);
   assert.strictEqual(await page.evaluate(() => window.AnimeMaker.db.getLastProject()), id);
   // 앱을 다시 켜도 남는 '다음에 받을 것'
   const exp = await page.evaluate((pid) => window.AnimeMaker.db.setExpecting({ projectId: pid, kind: 'cel', key: 'cel3_a' }), id);
   await page.reload();
   await page.evaluate(() => window.AnimeMaker.ready);
+  await page.click('.tabs [data-tab="projects"]');
+  await page.waitForSelector('.pitem');
   assert.strictEqual(await page.locator('.pitem').count(), 1);
   assert.deepStrictEqual(await page.evaluate(() => window.AnimeMaker.db.getExpecting()), exp);
   await page.click('.pitem');
@@ -187,9 +196,10 @@ test('작품 만들기 → 마지막 작품 기억 → 새로고침해도 목록
   assert.match(await page.textContent('#expecting-card'), /cel · cel3_a/);
   await shot(page, '03_project');
   // 지우기: 확인 창 → 작품 사라짐
-  await page.evaluate(() => window.AnimeMaker.app.go('home'));
-  await page.click('.pitem .icon-btn[aria-label="지우기"]');
-  await page.waitForSelector('.sheet');
+  await page.evaluate(() => window.AnimeMaker.app.go('projects'));
+  await page.click('.pitem .more');
+  await page.click('.sheet .menu-row.danger');
+  await page.waitForSelector('.sheet-btns .btn.primary');
   await page.click('.sheet-btns .btn.primary');
   await page.waitForSelector('#empty-list');
   assert.strictEqual(await page.evaluate(() => window.AnimeMaker.db.listProjects().then((l) => l.length)), 0);
@@ -258,7 +268,7 @@ test('D1 회귀: [그만두기] 를 고르면 일이 멈추고 덮개가 사라�
   assert.ok(await page.locator('.toast').filter({ hasText: '그만뒀어요' }).count() >= 1);
   // 일이 없을 때 뒤로가기는 평소처럼 한 단계 돌아간다
   await pressBack(page);
-  await page.waitForSelector('#btn-new');
+  await page.waitForSelector('.tabs');
   noErrors(errors);
 });
 

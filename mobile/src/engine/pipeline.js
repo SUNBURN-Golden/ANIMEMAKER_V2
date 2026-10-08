@@ -4,6 +4,7 @@
 // p.waiting 을 저장하고 돌리기를 끝낸다 (status 'waiting'). 앱이 꺼져도 저장돼 있고, 답장/그림이 오면 engine 이 run() 을 다시 불러서
 // 그 단계부터 이어 간다. 각 단계는 몇 번을 불러도 같은 결과가 나오게(다시 들어올 수 있게) 쓴다.
 import { X, P, T, DD, SubStyle, SC } from './shared.js';
+import { withJosa } from '../josa.js';
 import { STEPS, STEP_LABELS, MSG } from './model.js';
 import { BK } from './keys.js';
 import { buildXsheetContext, planXsheet, keyColorOf, outSizeOf } from './workflows.js';
@@ -307,7 +308,7 @@ async function stepDrawings(rt) {
   }
   const done = items.filter((it) => it.status === 'done').length;
   rt.setStep('drawings', { message: `${done}/${items.length}장 모았어요`, progress: { done, total: items.length } });
-  setWaiting(rt, { key: `image:${next.key}`, kind: next.kind, title: itemTitle(next), message: `AI 앱에 ${itemTitle(next)} 을(를) 부탁해 주세요.`, itemKey: next.key });
+  setWaiting(rt, { key: `image:${next.key}`, kind: next.kind, title: itemTitle(next), message: `AI 앱에 ${withJosa(itemTitle(next), '을/를')} 부탁해 주세요.`, itemKey: next.key });
   return WAIT;
 }
 

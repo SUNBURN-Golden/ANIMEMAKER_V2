@@ -25,6 +25,14 @@ export function sharedFallbackPlugin(missing = []) {
   return {
     name: 'am-shared-fallback',
     setup(b) {
+      // 완성·자막 스튜디오·장면 고치기·가사 맞추기 화면(src/screens/*.js)이 아직 없으면 같은 방식으로 빈 껍데기 (쓰는 순간 알기 쉬운 오류)
+      b.onResolve({ filter: /^\.\/(done|substudio|scenes|tap-sync)(\.js)?$/ }, (args) => {
+        const abs = path.resolve(args.resolveDir, args.path.endsWith('.js') ? args.path : `${args.path}.js`);
+        if (!abs.startsWith(path.join(here, 'src', 'screens') + path.sep) || fs.existsSync(abs)) return null;
+        const rel = path.relative(repoRoot, abs).split(path.sep).join('/');
+        if (!missing.includes(rel)) missing.push(rel);
+        return { path: rel, namespace: 'am-missing' };
+      });
       b.onResolve({ filter: /^(\.\.\/)+src\// }, (args) => {
         const abs = path.resolve(args.resolveDir, args.path);
         if (!abs.startsWith(srcRoot)) return null;
@@ -80,6 +88,9 @@ export async function buildApp({ dev = false, out = outDir(dev) } = {}) {
   });
   fs.copyFileSync(path.join(here, 'src', 'index.html'), path.join(out, 'index.html'));
   fs.copyFileSync(path.join(here, 'src', 'styles.css'), path.join(out, 'styles.css'));
+  const studioCss = path.join(here, 'src', 'styles-studio.css'); // C3b 의 스타일 (파일이 없어도 빌드가 멈추지 않게 빈 파일로 대신)
+  if (fs.existsSync(studioCss)) fs.copyFileSync(studioCss, path.join(out, 'styles-studio.css'));
+  else fs.writeFileSync(path.join(out, 'styles-studio.css'), '');
   const icon = path.join(repoRoot, 'build', 'icon.png'); // V2 아이콘 (런처 아이콘도 이것으로 만든다: tools/make-icons.py)
   if (!fs.existsSync(icon)) throw new Error(`V2 아이콘이 없어요: ${icon}`);
   fs.copyFileSync(icon, path.join(out, 'icon.png'));
