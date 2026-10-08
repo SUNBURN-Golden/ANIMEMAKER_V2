@@ -1144,7 +1144,7 @@ class ProjectRunner extends EventEmitter {
     const shown = (t.lyrics || []).filter((l) => !l.hidden && l.text);
     const lyrics = shown.filter((l) => l.start < total).map((l) => ({ ...l, end: Math.min(l.end, total) }));
     const s = this.series;
-    const name = `${safeName(`${s ? `${s.name} EP${s.episode} ` : ''}${this.p.plan.title}`)}.mp4`;
+    const name = `${safeName(`${s ? `${s.name} ${s.episode}화 ` : ''}${this.p.plan.title}`.replace(/\(체험\)/g, '(연습)'))}.mp4`; // 화면에서 쓰는 말(1화 · 연습)과 같게
     const finalPath = path.join(outDir, name);
     let burned = false;
     if (style.enabled && lyrics.length) {

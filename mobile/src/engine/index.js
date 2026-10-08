@@ -453,7 +453,7 @@ export function createEngine({ db, native = null, probe = null, now = Date.now, 
     /** 저장할 때 쓸 파일 이름 */
     async fileName(id, which = 'video') {
       const rt = await loadRuntime(id);
-      const base = safeName(`${rt.series ? `${rt.series.name} EP${rt.series.episode} ` : ''}${rt.p.plan ? rt.p.plan.title : rt.p.title}`);
+      const base = safeName(`${rt.series ? `${rt.series.name} ${rt.series.episode}화 ` : ''}${rt.p.plan ? rt.p.plan.title : rt.p.title}`.replace(/\(체험\)/g, '(연습)')); // 화면에서 쓰는 말(1화 · 연습)과 같게
       return which === 'srt' ? `${base}.srt` : which === 'lrc' ? `${base}.lrc` : `${base}${which === 'clean' ? ' (자막 없음)' : which === 'draft' ? ' (초안)' : ''}.mp4`;
     },
   };

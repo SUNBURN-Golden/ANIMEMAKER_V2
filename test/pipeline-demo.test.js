@@ -97,7 +97,8 @@ test('demo pipeline (지브리식): series episode → lyric tap → motion time
   const fi = await probe(final);
   assert.ok(fi.hasVideo && fi.hasAudio);
   assert.ok(Math.abs(fi.duration - p.music.analysis.duration) < 0.15, `final ${fi.duration} vs song ${p.music.analysis.duration}`);
-  assert.match(path.basename(final), /EP1/);
+  assert.match(path.basename(final), /1화/);
+  assert.doesNotMatch(path.basename(final), /EP|체험/, '파일 이름도 화면에서 쓰는 말(1화 · 연습)로');
   assert.match(fs.readFileSync(path.join(p.dir, 'output', 'lyrics.srt'), 'utf8'), /00:00:02,000 -->/);
   assert.ok(fs.existsSync(path.join(p.dir, 'output', 'timesheet.json')));
   assert.match(fs.readFileSync(path.join(p.dir, 'output', 'storyboard.md'), 'utf8'), /타임시트/);

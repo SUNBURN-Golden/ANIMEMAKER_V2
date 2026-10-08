@@ -36,6 +36,8 @@ test('시리즈 에피소드: 기준 그림을 영상마다 복사해 얼린 사
   const demo = newEngine();
   const did = await demo.engine.projects.create({ workflow: 'demo', seriesId: sid, aspect: '16:9' });
   await demo.engine.demo.fill(did);
+  const dname = await demo.engine.render.fileName(did, 'video');
+  assert.ok(/ 2화 /.test(dname) && !/EP|체험/.test(dname), `파일 이름은 화면에서 쓰는 말(2화 · 연습): ${dname}`);
   const series = await db.getSeries(sid);
   assert.deepStrictEqual(series.episodes.map((e) => [e.number, e.projectId]), [[2, did]], '에피소드 2 (1번은 아직 안 끝났다)');
   assert.ok(series.episodes[0].title && series.episodes[0].summary_ko);
@@ -127,7 +129,9 @@ test('자막: 숨긴 줄은 영상 · SRT · LRC 에서 빠지고, 영상 엔진
   assert.ok(!burned.includes(hiddenText) && burned.length === lines.length - 1);
   assert.ok(!(await (await engine.render.output(id, 'srt')).text()).includes(hiddenText));
   assert.ok(!(await (await engine.render.output(id, 'lrc')).text()).includes(hiddenText));
-  assert.ok((await engine.render.fileName(id, 'video')).endsWith('.mp4'));
+  const vname = await engine.render.fileName(id, 'video');
+  assert.ok(vname.endsWith('.mp4'));
+  assert.ok(!/EP|체험/.test(vname), `파일 이름은 화면에서 쓰는 말(연습): ${vname}`);
   assert.ok((await engine.render.fileName(id, 'srt')).endsWith('.srt'));
   // 자막을 끄면 깨끗한 원본이 그대로 완성본 (복사하지 않는다)
   await engine.edits.setSubtitleStyle(id, { enabled: false });

@@ -56,7 +56,7 @@ function createWindow() {
     height: 900,
     minWidth: 1040,
     minHeight: 680,
-    title: 'AnimeMaker V2 - 셀 애니메이션 뮤직비디오 제작기',
+    title: 'AnimeMaker V2 - 손그림 애니메이션 뮤직비디오 제작기',
     icon: path.join(__dirname, '..', 'renderer', 'assets', 'icon.png'),
     backgroundColor: '#f6f5fb',
     show: false,
