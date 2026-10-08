@@ -269,3 +269,28 @@ test('burnSubtitles: x264 veryfast(crf 18) 가 기본이고 옵션으로 바꿀 
   await burnSubtitles({ video: bg, total: 2, w: W, h: H, out: none, subtitlePngs: [{ ...subs[0], hidden: true }] });
   assert.ok(Math.abs((await countFrames(none)) - 48) <= 1);
 });
+
+test('burnSubtitles: 도중에 멈추거나 실패해도 예전 영상은 그대로 남고, 임시 파일(.part.mp4)은 남지 않는다 · 끝까지 가면 새 영상으로 바뀐다', { timeout: 120000 }, async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'am2-burn-stop-'));
+  const { runFfmpeg } = require('../src/main/media/ffmpeg');
+  const bg = path.join(dir, 'bg.mp4');
+  await runFfmpeg(['-y', '-f', 'lavfi', '-i', 'color=c=0x303030:s=640x360:d=20:r=24', '-f', 'lavfi', '-i', 'sine=frequency=330:duration=20', '-shortest', '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', bg]);
+  const out = path.join(dir, 'final.mp4');
+  const tmp = `${out}.part.mp4`;
+  fs.writeFileSync(out, 'OLD-VIDEO');
+  // 1) 만드는 도중에 멈춤 (느린 압축이라 0.3초 안에는 끝나지 않는다)
+  const ac = new AbortController();
+  const running = burnSubtitles({ video: bg, total: 20, w: 640, h: 360, out, subtitlePngs: [], signal: ac.signal }, { preset: 'veryslow' });
+  setTimeout(() => ac.abort(), 300);
+  await assert.rejects(running, (e) => e.name === 'AbortError');
+  assert.strictEqual(fs.readFileSync(out, 'utf8'), 'OLD-VIDEO', '멈추면 예전 영상이 그대로');
+  assert.ok(!fs.existsSync(tmp), '임시 파일은 지운다');
+  // 2) 입력이 없어서 실패
+  await assert.rejects(burnSubtitles({ video: path.join(dir, 'none.mp4'), total: 2, w: 640, h: 360, out, subtitlePngs: [] }));
+  assert.strictEqual(fs.readFileSync(out, 'utf8'), 'OLD-VIDEO', '실패해도 예전 영상이 그대로');
+  assert.ok(!fs.existsSync(tmp));
+  // 3) 끝까지 가면 새 영상으로 바뀌고 임시 파일은 없다
+  await burnSubtitles({ video: bg, total: 20, w: 640, h: 360, out, subtitlePngs: [] }, { preset: 'ultrafast' });
+  assert.ok(fs.statSync(out).size > 1000 && fs.readFileSync(out).subarray(4, 8).toString('latin1') === 'ftyp', '새 mp4');
+  assert.ok(!fs.existsSync(tmp));
+});
