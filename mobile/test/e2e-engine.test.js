@@ -129,8 +129,10 @@ test('연습 모드 에피소드 한 편: 만들기 → 영상 → 자막 → �
   const d = await ev((a) => H.diffFrames('ep.clean', 'ep.final', a), tMid);
   t.diagnostic(`자막 시각 ${tMid.toFixed(2)}s "${line.text}": 달라진 픽셀 ${d.count}, 상자 ${JSON.stringify(d.bbox)}`);
   assert.ok(d.count > 300, `완성본에 글씨가 있어야 해요 (${d.count})`);
-  assert.ok(d.bbox.y0 > d.h * 0.55 && d.bbox.y1 < d.h * 0.96, `글씨는 화면 아래쪽 안전 영역 안: ${JSON.stringify(d.bbox)}`);
-  assert.ok(d.bbox.x0 > d.w * 0.04 && d.bbox.x1 < d.w * 0.96);
+  // 글씨 자리는 '촘촘히 달라진 곳(core)'으로 잰다: 완성본·원본을 따로 인코딩하면(H.264 등) 먼 곳에도 흩어진 잡음이 생긴다
+  const box = d.core || d.bbox;
+  assert.ok(box.y0 > d.h * 0.55 && box.y1 < d.h * 0.96, `글씨는 화면 아래쪽 안전 영역 안: ${JSON.stringify(box)} (전체 ${JSON.stringify(d.bbox)})`);
+  assert.ok(box.x0 > d.w * 0.04 && box.x1 < d.w * 0.96);
   // 가사가 없는 시각에는 두 영상이 같다 (다시 인코딩한 잡음만)
   const lines = [...r.lines].sort((a, b) => a.start - b.start);
   let gap = null;

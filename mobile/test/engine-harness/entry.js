@@ -102,15 +102,26 @@ H.diffFrames = async (a, b, t, thr = 40) => {
   const A = (await grab(a, t)).img;
   const B = (await grab(b, t)).img;
   let x0 = 1e9; let y0 = 1e9; let x1 = -1; let y1 = -1; let count = 0; let sum = 0;
+  const rows = new Int32Array(A.height); const cols = new Int32Array(A.width);
   for (let y = 0; y < A.height; y++) {
     for (let x = 0; x < A.width; x++) {
       const i = (y * A.width + x) * 4;
       const d = Math.max(Math.abs(A.data[i] - B.data[i]), Math.abs(A.data[i + 1] - B.data[i + 1]), Math.abs(A.data[i + 2] - B.data[i + 2]));
       sum += d;
-      if (d > thr) { count++; if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+      if (d > thr) { count++; rows[y]++; cols[x]++; if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
     }
   }
-  return { w: A.width, h: A.height, count, bbox: count ? { x0, y0, x1, y1 } : null, mean: sum / (A.width * A.height) };
+  // core: 다시 인코딩한 잡음(H.264 는 먼 곳에도 흩어져 생긴다)은 빼고, 글씨처럼 촘촘히 달라진 줄·칸만으로 잰 상자
+  let core = null;
+  if (count) {
+    const maxR = Math.max(...rows); const maxC = Math.max(...cols);
+    const rMin = Math.max(6, maxR * 0.2); const cMin = Math.max(4, maxC * 0.2);
+    let cy0 = -1; let cy1 = -1; let cx0 = -1; let cx1 = -1;
+    for (let y = 0; y < A.height; y++) if (rows[y] >= rMin) { if (cy0 < 0) cy0 = y; cy1 = y; }
+    for (let x = 0; x < A.width; x++) if (cols[x] >= cMin) { if (cx0 < 0) cx0 = x; cx1 = x; }
+    if (cy0 >= 0 && cx0 >= 0) core = { x0: cx0, y0: cy0, x1: cx1, y1: cy1 };
+  }
+  return { w: A.width, h: A.height, count, bbox: count ? { x0, y0, x1, y1 } : null, core, mean: sum / (A.width * A.height) };
 };
 
 H.framePng = async (name, t) => {
