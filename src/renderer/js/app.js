@@ -90,14 +90,15 @@
   function renderSideRunning() {
     const box = clear(document.getElementById('side-running'));
     for (const p of AM.state.projects.values()) {
-      if (!p.running && p.status !== 'limited') continue;
+      const redrawing = !p.running && p.redrawing && p.redrawing.length > 0; // 그림 한 장 다시 그리기는 '만드는 중' 이 아니다
+      if (!p.running && p.status !== 'limited' && !redrawing) continue;
       const step = AM.STEP_META.find((s) => s.id === p.currentStep);
       const title = AM.niceTitle((p.plan && p.plan.title) || p.title);
       box.appendChild(h('button', { class: 'run-chip', title, onclick: () => AM.go('project', p.id) },
         h('span', { class: 'rc-ico' }, p.waiting ? '🙋' : '⏳'),
         h('span', { class: 'rc-txt' },
           h('b', null, title),
-          h('span', { class: 'rc-sub' }, p.waiting ? '내 도움이 필요해요' : p.status === 'limited' ? '잠깐 쉬는 중이에요' : step ? step.chip : '만드는 중'))));
+          h('span', { class: 'rc-sub' }, redrawing ? '그림 다시 그리는 중' : p.waiting ? '내 도움이 필요해요' : p.status === 'limited' ? '잠깐 쉬는 중이에요' : step ? step.chip : '만드는 중'))));
     }
   }
 
