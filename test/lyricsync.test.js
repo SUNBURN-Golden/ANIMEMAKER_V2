@@ -119,3 +119,185 @@ test('확인하기: 지금 떠 있는 줄 (간주에는 없음), 저장 결과�
   assert.strictEqual(LS.fmt(65.04), '1:05.0');
   assert.strictEqual(LS.fmt(59.96), '1:00.0');
 });
+
+// ---------- 진짜 영상 + 진짜 자막 (video · styleProvider 옵션) ----------
+// 화면 라이브러리(jsdom)가 없어서, mount 가 쓰는 만큼만 흉내 낸 아주 작은 DOM 을 쓴다.
+function withFakeDom(fn) {
+  class FNode {}
+  class FText extends FNode { constructor(t) { super(); this.nodeValue = t; } }
+  class FEl extends FNode {
+    constructor(tag) {
+      super();
+      this.tagName = String(tag).toUpperCase();
+      this.children = [];
+      this.attrs = {};
+      this.style = {};
+      this.listeners = {};
+      this.className = '';
+      this.parentNode = null;
+      this.isConnected = true;
+      this.scrollTop = 0; this.clientHeight = 100; this.offsetTop = 0; this.offsetHeight = 10;
+      const self = this;
+      this.classList = {
+        has: (c) => self.className.split(/\s+/).includes(c),
+        contains: (c) => self.classList.has(c),
+        add: (c) => { if (!self.classList.has(c)) self.className = `${self.className} ${c}`.trim(); },
+        remove: (c) => { self.className = self.className.split(/\s+/).filter((x) => x && x !== c).join(' '); },
+        toggle: (c, on) => { if (on === undefined ? !self.classList.has(c) : on) self.classList.add(c); else self.classList.remove(c); },
+      };
+    }
+    get firstChild() { return this.children[0] || null; }
+    appendChild(c) { c.parentNode = this; this.children.push(c); return c; }
+    removeChild(c) { this.children = this.children.filter((x) => x !== c); c.parentNode = null; return c; }
+    setAttribute(k, v) { this.attrs[k] = String(v); }
+    getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; }
+    removeAttribute(k) { delete this.attrs[k]; }
+    addEventListener(t, fn) { (this.listeners[t] = this.listeners[t] || []).push(fn); }
+    removeEventListener(t, fn) { this.listeners[t] = (this.listeners[t] || []).filter((x) => x !== fn); }
+    set textContent(v) { this.children = [new FText(String(v))]; }
+    get textContent() { return this.children.map((c) => (c instanceof FText ? c.nodeValue : c.textContent)).join(''); }
+    contains(n) { return n === this || this.children.some((c) => c.contains && c.contains(n)); }
+    getBoundingClientRect() { return { left: 0, top: 0, width: 100, height: 20 }; }
+    getContext() { return this.ctx || (this.ctx = { tag: 'ctx' }); }
+    pause() { this.paused = true; }
+    load() {}
+    all(pred, out = []) { for (const c of this.children) { if (c instanceof FEl) { if (pred(c)) out.push(c); c.all(pred, out); } } return out; }
+    querySelector(sel) {
+      const m = /^\.([\w-]+)\[data-i="(-?\d+)"\]$/.exec(sel);
+      if (!m) return null;
+      return this.all((e) => e.classList.has(m[1]) && e.attrs['data-i'] === m[2])[0] || null;
+    }
+    find(cls) { return this.all((e) => e.classList.has(cls))[0] || null; }
+  }
+  const docListeners = [];
+  const doc = {
+    head: new FEl('head'),
+    createElement: (t) => new FEl(t),
+    createTextNode: (t) => new FText(t),
+    getElementById: () => null,
+    addEventListener: (t, f) => docListeners.push([t, f]),
+    removeEventListener: (t, f) => { const i = docListeners.findIndex((x) => x[0] === t && x[1] === f); if (i >= 0) docListeners.splice(i, 1); },
+  };
+  const saved = { document: global.document, Node: global.Node, raf: global.requestAnimationFrame, caf: global.cancelAnimationFrame };
+  global.document = doc; global.Node = FNode; global.requestAnimationFrame = () => 1; global.cancelAnimationFrame = () => {};
+  try { return fn({ FEl, docListeners }); } finally {
+    global.document = saved.document; global.Node = saved.Node; global.requestAnimationFrame = saved.raf; global.cancelAnimationFrame = saved.caf;
+  }
+}
+
+function fakeVideo(FEl) {
+  const v = new FEl('video');
+  Object.assign(v, { currentTime: 0, paused: true, duration: 60, playbackRate: 1, videoWidth: 0, videoHeight: 0 });
+  v.play = () => { v.paused = false; (v.listeners.play || []).forEach((f) => f()); return Promise.resolve(); };
+  v.pause = () => { v.paused = true; (v.listeners.pause || []).forEach((f) => f()); };
+  v.emit = (t) => (v.listeners[t] || []).forEach((f) => f());
+  return v;
+}
+
+test('영상용 도우미: 그릴 줄(시작·끝·숨김)과 그리개 호출, 그리개가 없으면 조용히 건너뜀, 상자 크기는 영상 비율', () => {
+  const s = LS.create(LINES, 60, { confirmed: true });
+  const lines = LINES.map((l, i) => ({ ...l, hidden: i === 1 }));
+  const cl = LS.checkLines(s, lines);
+  assert.deepStrictEqual(cl.map((l) => l.hidden), [false, true, false, false]);
+  assert.strictEqual(cl[0].start, 10);
+  assert.ok(Math.abs(cl[0].end - 13.95) < 1e-9);
+  const calls = [];
+  const R = { drawFrame: (...a) => { calls.push(a); return [{ ok: 1 }]; } };
+  const ctx = { id: 'c' };
+  const drawn = LS.drawCheck(R, ctx, s, lines, 11, { font: 'jua' }, 1280, 720);
+  assert.strictEqual(drawn.length, 1);
+  assert.strictEqual(calls.length, 1);
+  assert.strictEqual(calls[0][0], ctx);
+  assert.strictEqual(calls[0][2], 11);
+  assert.deepStrictEqual(calls[0][3], { font: 'jua' });
+  assert.deepStrictEqual([calls[0][4], calls[0][5]], [1280, 720]);
+  assert.deepStrictEqual(LS.drawCheck(null, ctx, s, lines, 11, {}, 1280, 720), []);
+  assert.deepStrictEqual(LS.drawCheck({}, ctx, s, lines, 11, {}, 1280, 720), []);
+  const wide = LS.stageSize(1280, 720);
+  const tall = LS.stageSize(720, 1280);
+  assert.strictEqual(wide.aspect, '1280 / 720');
+  assert.strictEqual(tall.aspect, '720 / 1280');
+  assert.ok(/min\(100%, 560px, 78\.\d+vh\)/.test(wide.width), wide.width);
+  assert.ok(/min\(100%, 560px, 24\.\d+vh\)/.test(tall.width), tall.width);
+});
+
+test('mount: video · styleProvider 를 안 주면 예전과 같다 (노래 <audio> 를 만들고 글씨 무대를 쓴다)', () => {
+  withFakeDom(() => {
+    const w = LS.mount({ lines: LINES, duration: 60, src: 'file:///song.mp3', confirmed: true });
+    assert.strictEqual(w.audio.tagName, 'AUDIO');
+    assert.strictEqual(w.audio.getAttribute('src'), 'file:///song.mp3');
+    assert.ok(w.el.find('ls-sub'), 'white-on-dark text stage');
+    assert.strictEqual(w.el.find('ls-vbox'), null);
+    assert.strictEqual(w.el.find('ls-vcanvas'), null);
+    assert.strictEqual(w.untapped(), 0);
+    assert.strictEqual(w.tappedFlags().length, 4);
+    w.destroy();
+    assert.strictEqual(w.audio.getAttribute('src'), null, 'own audio is released');
+  });
+});
+
+test('mount: video 를 주면 그 영상을 틀고, 확인하기 무대에 영상+자막 그림판이 나온다 (맞추기에서는 그리지 않음)', () => {
+  withFakeDom(({ FEl }) => {
+    const video = fakeVideo(FEl);
+    const calls = [];
+    const R = { drawFrame: (ctx, lines, t, style, W, H) => { calls.push({ ctx, lines, t, style, W, H }); return []; } };
+    let provided = 0;
+    const style = { preset: 'pop' };
+    const w = LS.mount({
+      lines: LINES, duration: 60, src: 'file:///clean.mp4', confirmed: true,
+      video, renderer: R, styleProvider: () => { provided++; return { style, W: 720, H: 1280 }; },
+    });
+    assert.strictEqual(w.audio, video, 'the given video is the player');
+    assert.strictEqual(video.src, 'file:///clean.mp4', 'src fills an empty video');
+    assert.strictEqual(w.el.all((e) => e.tagName === 'AUDIO').length, 0, 'no own <audio>');
+    assert.ok(w.el.find('ls-vbox') && w.el.find('ls-vbox').children.includes(video), 'video sits in the dark stage');
+    assert.strictEqual(w.el.find('ls-sub'), null, 'no white-on-dark text when a video is given');
+    const cv = w.el.find('ls-vcanvas');
+    assert.strictEqual(cv.width, 720);
+    assert.strictEqual(cv.height, 1280);
+    assert.strictEqual(w.el.find('ls-vbox').style.aspectRatio, '720 / 1280');
+    // 확인하기(confirmed): 12초에 멈춰 있으면 그 순간의 줄들을 모양과 함께 그린다
+    video.currentTime = 12;
+    video.emit('seeked');
+    const last = calls[calls.length - 1];
+    assert.ok(provided > 0);
+    assert.strictEqual(last.t, 12);
+    assert.strictEqual(last.style, style);
+    assert.deepStrictEqual([last.W, last.H], [720, 1280]);
+    assert.strictEqual(last.lines.length, 4);
+    assert.strictEqual(last.lines[0].text, '별빛이 내리는 밤');
+    assert.strictEqual(last.lines[0].start, 10);
+    assert.strictEqual(last.ctx, cv.ctx);
+    // 닫을 때: 귀를 떼고 영상은 부른 쪽 것이라 주소를 지우지 않는다
+    const n = calls.length;
+    w.destroy();
+    assert.strictEqual(video.paused, true);
+    assert.strictEqual(video.src, 'file:///clean.mp4');
+    video.emit('seeked');
+    assert.strictEqual(calls.length, n, 'no more drawing after destroy');
+  });
+});
+
+test('mount: 처음부터 맞추기(confirmed:false)에서는 그리지 않고, 확인하기로 가면 그린다 / 영상 비슷한 것(Node 아님)과 그리개 없음도 견딘다', () => {
+  withFakeDom(({ FEl }) => {
+    const video = fakeVideo(FEl);
+    const calls = [];
+    const w = LS.mount({ lines: LINES, duration: 60, video, renderer: { drawFrame: (...a) => { calls.push(a); return []; } }, styleProvider: () => ({ style: {}, W: 1280, H: 720 }) });
+    video.emit('seeked');
+    assert.strictEqual(calls.length, 0, 'tap step draws nothing');
+    assert.ok(w.el.className.includes('ls-tap'));
+    // 모두 누르지 않아도 [👀 2. 확인하기] 로 넘어갈 수 있다
+    const tabs = w.el.find('ls-modes').children;
+    tabs[1].listeners.click[0]();
+    assert.ok(w.el.className.includes('ls-check'));
+    assert.ok(calls.length >= 1, 'check step draws');
+    w.destroy();
+    // Node 가 아닌 영상 비슷한 것, 그리개 없음
+    const plain = { currentTime: 3, paused: true, duration: 60, listeners: {}, play() { this.paused = false; }, pause() { this.paused = true; }, addEventListener(t, f) { (this.listeners[t] = this.listeners[t] || []).push(f); }, removeEventListener(t, f) { this.listeners[t] = (this.listeners[t] || []).filter((x) => x !== f); } };
+    const w2 = LS.mount({ lines: LINES, duration: 60, confirmed: true, video: plain });
+    assert.strictEqual(w2.audio, plain);
+    plain.listeners.seeked.forEach((f) => f());
+    w2.destroy();
+    assert.strictEqual((plain.listeners.seeked || []).length, 0);
+  });
+});

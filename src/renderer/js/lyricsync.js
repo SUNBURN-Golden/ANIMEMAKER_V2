@@ -157,6 +157,30 @@
     return `${m}:${sec}`;
   }
 
+  // ---------- 실제 영상 + 실제 자막 (video · styleProvider 를 줄 때만 쓴다) ----------
+
+  /** 확인하기에서 자막 그리개(AMSubtitleRender.drawFrame)에 넘길 줄들: 지금 맞춘 시작·끝 시간과 숨김 표시를 합친다 */
+  function checkLines(s, lines) {
+    const e = ends(s);
+    return lines.map((l, i) => ({ text: l.text, start: s.marks[i], end: e[i], hidden: !!l.hidden }));
+  }
+
+  /**
+   * t 초 화면에 나오는 자막을 ctx 에 그린다 (스튜디오 미리보기와 같은 그리개). 그리개가 없으면 아무것도 하지 않는다.
+   * @param {{drawFrame:Function}|null} R AMSubtitleRender (모양 만들기 도구). 폰 앱처럼 없을 수도 있다
+   * @returns {object[]} 그린 줄들 (없으면 [])
+   */
+  function drawCheck(R, ctx, s, lines, t, style, W, H) {
+    if (!R || typeof R.drawFrame !== 'function' || !ctx) return [];
+    return R.drawFrame(ctx, checkLines(s, lines), t, style, W, H) || [];
+  }
+
+  /** 영상 상자 크기 (CSS): 가로는 칸 폭까지, 세로는 화면 높이의 vh % 까지 — 영상 비율을 지킨다 */
+  function stageSize(W, H, maxVh = 44, maxPx = 560) {
+    const ar = W > 0 && H > 0 ? W / H : 16 / 9;
+    return { aspect: `${W > 0 ? W : 16} / ${H > 0 ? H : 9}`, width: `min(100%, ${maxPx}px, ${Math.round(maxVh * ar * 100) / 100}vh)` };
+  }
+
   // ---------- 화면 ----------
 
   function h(tag, props, ...kids) {
@@ -208,6 +232,10 @@
 .ls-sub { min-height: 1.4em; font-size: 24px; font-weight: 800; line-height: 1.35; color: #fff; text-shadow: 0 0 3px #000, 0 2px 4px #000; word-break: keep-all; }
 .ls-sub.none { font-size: 16px; font-weight: 600; color: #8b879c; text-shadow: none; }
 .ls-cap { font-size: 12px; color: #a7a3b8; }
+.ls-vbox { position: relative; align-self: center; overflow: hidden; border-radius: 10px; background: #000; max-width: 100%; }
+.ls-vbox video, .ls-vbox canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.ls-vbox video { object-fit: contain; }
+.ls-vbox canvas { pointer-events: none; }
 .ls-acts { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px; }
 .ls-big { min-width: min(300px, 64%); min-height: 62px; padding: 14px 26px; border-radius: 999px; font-size: 24px; font-weight: 800; }
 .ls-progress { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted, #6b6780); }
@@ -235,9 +263,15 @@
 
   /**
    * 화면 만들기
-   * @param {{lines:object[], duration:number, src:string, confirmed?:boolean, isActive?:()=>boolean}} o
+   * @param {{lines:object[], duration:number, src:string, confirmed?:boolean, isActive?:()=>boolean,
+   *   video?:object, styleProvider?:()=>({style:object,W:number,H:number}), renderer?:{drawFrame:Function}}} o
    *   isActive: 키보드를 받아도 되는지 (다른 창이 위에 떠 있으면 false)
-   * @returns {{el:HTMLElement, result:()=>object[], untapped:()=>number, destroy:()=>void, state:object, audio:HTMLAudioElement}}
+   *   video: (고르기) <video> 같은 것 (currentTime · play() · pause() · paused · addEventListener …). 주면 노래 대신 이 영상을 틀고,
+   *     2단계 확인하기의 어두운 무대에 글씨 대신 '진짜 영상 + 진짜 모양의 자막'을 보여 준다. 영상 요소는 부른 쪽 것이라 닫을 때 src 를 지우지 않는다.
+   *   styleProvider: (고르기) 지금 자막 모양과 영상 출력 크기를 돌려주는 함수 — video 와 함께 쓴다. 매 그림마다 부른다.
+   *   renderer: (고르기) 자막 그리개 (기본: 전역 AMSubtitleRender). 없으면 영상만 보이고 자막은 그리지 않는다.
+   *   둘 다 안 주면 예전과 똑같이 동작한다 (폰 앱 tap.js · 옛 프로젝트 창).
+   * @returns {{el:HTMLElement, result:()=>object[], untapped:()=>number, tappedFlags:()=>boolean[], destroy:()=>void, state:object, audio:HTMLMediaElement}}
    */
   function mount(o) {
     if (!document.getElementById('am-ls-style')) document.head.appendChild(h('style', { id: 'am-ls-style' }, CSS));
@@ -251,7 +285,20 @@
     let shownActive = -2;
     let flashTimer = 0;
 
-    const audio = h('audio', { preload: 'auto', src: o.src });
+    const video = o.video || null;
+    const audio = video || h('audio', { preload: 'auto', src: o.src });
+    if (video && o.src && !video.src && !video.currentSrc) video.src = o.src; // 영상에 주소가 아직 없으면 src 로 채운다
+    const R = o.renderer || (typeof self !== 'undefined' && self.AMSubtitleRender) || null;
+    const styleNow = () => {
+      const v = o.styleProvider ? o.styleProvider() : null;
+      return {
+        style: (v && v.style) || {},
+        W: (v && v.W) || video.videoWidth || 1280,
+        H: (v && v.H) || video.videoHeight || 720,
+      };
+    };
+    const listeners = []; // 부른 쪽 영상에 붙인 귀는 닫을 때 떼어 낸다
+    const on = (type, fn) => { audio.addEventListener(type, fn); listeners.push([type, fn]); };
     const pct = (t) => `${Math.max(0, Math.min(100, (t / D) * 100))}%`;
     const seek = (t) => { audio.currentTime = Math.max(0, Math.min(D - 0.05, t)); live(true); };
     const play = () => { const p = audio.play(); if (p && p.catch) p.catch(() => {}); };
@@ -283,7 +330,10 @@
     const nextEl = h('div', { class: 'ls-next only-tap' });
     const subEl = h('div', { class: 'ls-sub only-check' });
     const capEl = h('div', { class: 'ls-cap only-check' });
-    const stage = h('div', { class: 'ls-stage', onclick: () => { if (mode === 'tap') primary(); } }, prevEl, cueEl, curEl, nextEl, subEl, capEl);
+    // 진짜 영상 + 자막 그림판 (video 를 줬을 때만): 숨겨도 영상은 계속 틀 수 있어서 맞추기 단계에서는 CSS 로만 감춘다
+    const vcanvas = video ? h('canvas', { class: 'ls-vcanvas' }) : null;
+    const vbox = video ? h('div', { class: 'ls-vbox only-check' }, typeof Node !== 'undefined' && video instanceof Node ? video : null, vcanvas) : null; // Node 가 아닌 '영상 비슷한 것'은 그냥 틀기만 한다
+    const stage = h('div', { class: 'ls-stage', onclick: () => { if (mode === 'tap') primary(); } }, prevEl, cueEl, curEl, nextEl, video ? vbox : subEl, capEl);
 
     // 버튼들
     const undoBtn = btn('small', '↩ 방금 것 취소', () => doUndo(), '키보드: Backspace');
@@ -306,7 +356,7 @@
       h('div', { class: 'ls-keys' },
         h('kbd', null, 'Space'), ' 지금! / 재생 · ', h('kbd', null, 'Backspace'), ' 방금 것 취소 · ', h('kbd', null, '←'), h('kbd', null, '→'), ' 3초 이동'),
       list,
-      audio);
+      video ? null : audio);
 
     function setMode(m) {
       mode = m;
@@ -359,8 +409,10 @@
         nextEl.textContent = i + 1 < s.n ? `다음 줄: ${lines[i + 1].text}` : i < s.n ? '마지막 줄이에요' : '[👀 2. 확인하기] 를 눌러 처음부터 들어 보세요';
       } else {
         const a = activeAt(s, audio.currentTime, ends(s), 0.1);
-        subEl.textContent = a >= 0 ? lines[a].text : '(지금은 자막이 없는 부분)';
-        subEl.classList.toggle('none', a < 0);
+        if (!video) {
+          subEl.textContent = a >= 0 ? lines[a].text : '(지금은 자막이 없는 부분)';
+          subEl.classList.toggle('none', a < 0);
+        }
         capEl.textContent = a >= 0 ? `${a + 1}번째 줄 · ${fmt(s.marks[a])} 에 나와요` : '완성 영상에서도 이 시간에는 자막이 안 나와요';
       }
     }
@@ -446,11 +498,25 @@
     }
 
     /** 재생 중 계속 바뀌는 것: 재생 위치, 시간, 확인하기의 지금 줄 */
+    /** 진짜 영상 위 자막 그림판 다시 그리기 (재생 중에는 매 순간 부른다) */
+    function drawReal() {
+      if (!video || !vcanvas || mode !== 'check') return;
+      const { style, W, H } = styleNow();
+      if (vcanvas.width !== W) vcanvas.width = W;
+      if (vcanvas.height !== H) vcanvas.height = H;
+      const z = stageSize(W, H);
+      if (vbox.style.aspectRatio !== z.aspect) { vbox.style.aspectRatio = z.aspect; vbox.style.width = z.width; }
+      const ctx = vcanvas.getContext('2d');
+      if (!ctx) return;
+      drawCheck(R, ctx, s, lines, audio.currentTime || 0, style, W, H);
+    }
+
     function live(force) {
       const t = audio.currentTime || 0;
       head.style.left = pct(t);
       fill.style.width = pct(t);
       timeEl.textContent = `${fmt(t)} / ${fmt(D, 0)}`;
+      drawReal();
       if (mode === 'check') {
         const a = activeAt(s, t, ends(s), 0.1);
         if (a !== shownActive || force) {
@@ -465,10 +531,15 @@
     }
 
     const loop = () => { live(false); raf = audio.paused ? 0 : requestAnimationFrame(loop); };
-    audio.addEventListener('play', () => { renderTop(); if (!raf) raf = requestAnimationFrame(loop); });
-    audio.addEventListener('pause', () => { renderTop(); live(true); });
-    audio.addEventListener('seeked', () => live(true));
-    audio.addEventListener('loadedmetadata', () => live(true));
+    on('play', () => { renderTop(); if (!raf) raf = requestAnimationFrame(loop); });
+    on('pause', () => { renderTop(); live(true); });
+    on('seeked', () => live(true));
+    on('loadedmetadata', () => live(true));
+    if (video) on('loadeddata', () => live(true));
+    // 모양에 쓰는 글꼴이 아직 안 읽혔으면 읽고 다시 그린다 (스튜디오는 미리 읽어 두므로 보통 바로 끝난다)
+    if (video && R && R.style && typeof document !== 'undefined' && document.fonts && document.fonts.load) {
+      try { Promise.resolve(document.fonts.load(R.style.fontCss(styleNow().style, 40), '가나다ABC')).then(() => live(true), () => {}); } catch (_) { /* 글꼴이 없어도 그린다 */ }
+    }
 
     const onKey = (e) => {
       if (!el.isConnected || (o.isActive && !o.isActive())) return;
@@ -494,16 +565,19 @@
       state: s,
       result: () => result(s, lines),
       untapped: () => untapped(s),
+      tappedFlags: () => s.tapped.slice(),
       destroy: () => {
         document.removeEventListener('keydown', onKey);
         if (raf) cancelAnimationFrame(raf);
         clearTimeout(flashTimer);
+        for (const [type, fn] of listeners) audio.removeEventListener(type, fn); // 귀를 먼저 떼야 pause 가 다시 그리지 않는다
         audio.pause();
+        if (video) return; // 영상 요소는 부른 쪽 것: 주소를 지우는 것도 부른 쪽이 한다
         audio.removeAttribute('src');
         try { audio.load(); } catch (_) { /* noop */ }
       },
     };
   }
 
-  return { MIN_GAP, REACTION, MAX_LINE, create, normalize, undo, tapTime, tap, nudge, shiftAll, leadIn, ends, activeAt, untapped, result, fmt, mount };
+  return { MIN_GAP, REACTION, MAX_LINE, create, normalize, undo, tapTime, tap, nudge, shiftAll, leadIn, ends, activeAt, untapped, result, fmt, checkLines, drawCheck, stageSize, mount };
 });
