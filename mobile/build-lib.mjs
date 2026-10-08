@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 export const here = path.dirname(fileURLToPath(import.meta.url));
 export const repoRoot = path.resolve(here, '..');
 /** 묶음 하나 = 파일 하나 (IIFE). app 은 화면, 나머지는 Worker 일꾼 */
-export const ENTRIES = { app: 'src/main.js', 'analyze.worker': 'src/analyze.worker.js', 'key.worker': 'src/key.worker.js' };
+export const ENTRIES = { app: 'src/main.js', 'analyze.worker': 'src/analyze.worker.js', 'key.worker': 'src/engine-workers/key.worker.js' };
 /** WebCodecs 가 들어온 Chrome 94 (src/probe.js 의 MIN_CHROME 과 같다) */
 export const TARGET = ['chrome94'];
 

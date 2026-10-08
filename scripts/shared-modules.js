@@ -23,6 +23,7 @@ module.exports = [
   { file: 'src/main/media/audio-analysis.js' },
   { file: 'src/main/ai/demo-data.js' },
   { file: 'src/main/pipeline/subs-core.js' },
+  { file: 'src/main/pipeline/edits-core.js' },
   { file: 'src/shared/subtitle-style.js' },
   { file: 'src/shared/subtitle-render.js' },
   { file: 'src/shared/camera.js' },
