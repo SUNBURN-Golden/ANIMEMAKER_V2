@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self' file:; img-src 'self' file: data: blob:; media-src 'self' file: blob:; style-src 'self' 'unsafe-inline' file:; script-src 'self' file:; connect-src 'self' file:">
+  <title>AnimeMaker V2 - 손그림 애니메이션 뮤직비디오 제작기</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="css/make.css">
+  <link rel="stylesheet" href="css/project.css">
+  <link rel="stylesheet" href="css/scenes.css">
+  <link rel="stylesheet" href="css/substudio.css">
+</head>
+<body>
+  <div id="app">
+    <aside id="sidebar">
+      <div class="brand">
+        <img src="assets/icon.png" alt="">
+        <div>
+          <div class="brand-name">AnimeMaker <span class="v2">V2</span></div>
+          <div class="brand-sub">손그림 애니 뮤직비디오</div>
+        </div>
+      </div>
+      <nav id="nav">
+        <button data-view="home" class="nav-item"><span class="ico">🎬</span><span class="lbl">만들기</span></button>
+        <button data-view="projects" class="nav-item"><span class="ico">📂</span><span class="lbl">내 영상</span></button>
+        <button data-view="hero" class="nav-item"><span class="ico">🧒</span><span class="lbl">주인공</span></button>
+        <button data-view="settings" class="nav-item"><span class="ico">⚙️</span><span class="lbl">설정</span></button>
+      </nav>
+      <div class="side-foot">
+        <div id="side-running"></div>
+        <button data-view="help" class="nav-help"><span class="ico">❓</span><span class="lbl">도움말</span></button>
+      </div>
+    </aside>
+    <main id="main"></main>
+  </div>
+  <div id="modal-root"></div>
+  <div id="toast-root"></div>
+  <script src="js/ui.js"></script>
+  <script src="js/kit.js"></script>
+  <script src="../shared/subtitle-style.js"></script>
+  <script src="../shared/subtitle-render.js"></script>
+  <script src="../shared/camera.js"></script>
+  <script src="js/lyricsync.js"></script>
+  <script src="js/home.js"></script>
+  <script src="js/hero.js"></script>
+  <script src="js/characters.js"></script>
+  <script src="js/series.js"></script>
+  <script src="js/project.js"></script>
+  <script src="js/scenes.js"></script>
+  <script src="js/substudio.js"></script>
+  <script src="js/projects.js"></script>
+  <script src="js/workflows.js"></script>
+  <script src="js/settings.js"></script>
+  <script src="js/help.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

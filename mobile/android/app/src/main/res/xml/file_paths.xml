@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 다른 앱으로 내보낼 수 있는 폴더는 앱 캐시의 am/ (보내는 파일) 과 shared/ (받은 파일) 뿐이에요 -->
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <cache-path name="am_out" path="am/" />
+    <cache-path name="shared_in" path="shared/" />
+</paths>

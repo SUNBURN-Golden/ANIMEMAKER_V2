@@ -1,0 +1,85 @@
+{
+  "name": "animemaker-v2",
+  "productName": "AnimeMaker V2",
+  "version": "2.0.0",
+  "description": "노래·가사와 고정 주인공(캐릭터 파일)으로 80~90년대 손그림 셀 애니메이션 감성의 뮤직비디오를 에피소드처럼 만들어 주는 윈도우용 AI 제작기 (AnimeMaker V1 에서 갈라져 나옴)",
+  "main": "src/main/main.js",
+  "author": "SUNBURN-Golden",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test --test-concurrency=1 \"test/*.test.js\"",
+    "fetch:rife": "node scripts/fetch-rife.js",
+    "dist:win": "node scripts/fetch-rife.js --platform win32 && electron-builder --win --x64 --publish never",
+    "dist:dir": "electron-builder --dir --publish never"
+  },
+  "dependencies": {
+    "ffmpeg-static": "^5.3.0",
+    "playwright-core": "^1.63.0"
+  },
+  "devDependencies": {
+    "electron": "^44.6.0",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "com.animemaker.v2",
+    "productName": "AnimeMaker V2",
+    "copyright": "SUNBURN-Golden",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "src/**/*",
+      "package.json",
+      "!src/**/*.test.js"
+    ],
+    "extraResources": [
+      {
+        "from": "vendor/rife/${platform}-${arch}",
+        "to": "rife",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "asarUnpack": [
+      "node_modules/ffmpeg-static/**",
+      "node_modules/playwright-core/**"
+    ],
+    "win": {
+      "icon": "build/icon.png",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "AnimeMaker V2",
+      "installerLanguages": [
+        "ko_KR"
+      ],
+      "language": "1042",
+      "artifactName": "AnimeMaker-V2-${version}-setup.${ext}"
+    },
+    "portable": {
+      "artifactName": "AnimeMaker-V2-${version}-portable.${ext}"
+    }
+  }
+}

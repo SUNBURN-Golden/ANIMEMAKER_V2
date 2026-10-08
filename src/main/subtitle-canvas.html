@@ -1,0 +1,61 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<!--
+  가사 자막 PNG 를 그리는 숨은 창의 페이지 (src/main/subtitles.js 가 win.loadFile 로 연다).
+  data: 주소로 열면 번들 글꼴을 못 읽기 때문에 꼭 파일로 연다 (DESIGN §2.2).
+  글꼴 규칙은 공용 모듈이 만들어서 한 곳(subtitle-style.js 의 FONTS 표)에서만 관리한다.
+-->
+<style id="am-fonts"></style>
+<script src="../shared/subtitle-style.js"></script>
+<script src="../shared/subtitle-render.js"></script>
+<script>
+(function () {
+  const S = window.AMSubtitleStyle;
+  const R = window.AMSubtitleRender;
+  document.getElementById('am-fonts').textContent = S.fontFaceCss('../renderer/assets/fonts/');
+
+  const makeCanvas = (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; };
+
+  window.AMSubs = {
+    /**
+     * 글꼴을 읽어 둔다 (재기 전에 꼭). 고른 글꼴 파일을 못 읽으면 system 글꼴로 되돌아간다.
+     * 다른 글꼴에 없는 글자를 채워 줄 Pretendard 도 함께 읽어 둔다.
+     * @returns {{font:string, fallback:boolean, reason?:string}}
+     */
+    async prepare(style, text) {
+      const want = S.normalizeStyle(style).font;
+      const def = S.FONT_BY_ID[want];
+      if (!def || !def.family) return { font: want, fallback: false };
+      const sample = (String(text || '') + '가나다ABC').slice(0, 4000);
+      try {
+        const faces = await document.fonts.load(S.fontCss(want, 40), sample);
+        const mine = faces.filter((f) => String(f.family).replace(/["']/g, '') === def.family);
+        if (!mine.length || !mine.every((f) => f.status === 'loaded')) return { font: 'system', fallback: true, reason: '글꼴 파일을 읽지 못했어요' };
+        if (def.family !== S.FALLBACK_FAMILY) {
+          try { await document.fonts.load('700 40px "' + S.FALLBACK_FAMILY + '"', sample); } catch (e) { /* 채우기용 글꼴이 없어도 system 글꼴이 대신한다 */ }
+        }
+        return { font: want, fallback: false };
+      } catch (e) {
+        return { font: 'system', fallback: true, reason: String((e && e.message) || e) };
+      }
+    },
+
+    /** 한 줄을 PNG(base64)로 그린다 */
+    render(text, style, W, H) {
+      const r = R.lineToCanvas(makeCanvas, text, style, W, H);
+      if (!r) return null;
+      const url = r.canvas.toDataURL('image/png');
+      return {
+        png: url.slice(url.indexOf(',') + 1),
+        x: r.x, y: r.y, w: r.w, h: r.h,
+        lines: r.layout.lines, lineCount: r.layout.lineCount, px: r.layout.px, tooLong: !!r.layout.tooLong,
+      };
+    },
+  };
+})();
+</script>
+</head>
+<body></body>
+</html>

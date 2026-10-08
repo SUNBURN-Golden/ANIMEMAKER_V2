@@ -1,0 +1,222 @@
+{
+  "version": 2,
+  "updated": "2026-10-07",
+  "note": "자동 클릭 레시피 (실험적). 사이트 화면 구조가 바뀌면 선택자(any)와 버튼 글자(texts)를 고치세요. {{prompt}}, {{image}}, {{seconds}}, {{aspect}} 는 앱이 채웁니다.",
+  "tasks": {
+    "gemini.image": {
+      "name": "Gemini 이미지 (Nano Banana)",
+      "kind": "image",
+      "ext": ".png",
+      "steps": [
+        {
+          "do": "goto",
+          "url": "https://gemini.google.com/app"
+        },
+        {
+          "do": "waitFor",
+          "timeout": 30000
+        },
+        {
+          "do": "upload",
+          "file": "{{reference}}",
+          "when": "reference",
+          "optional": true
+        },
+        {
+          "do": "fill",
+          "text": "Generate an image ({{aspect}}). {{prompt}}"
+        },
+        {
+          "do": "submit"
+        },
+        {
+          "do": "waitResult",
+          "kind": "image",
+          "timeout": 300000
+        },
+        {
+          "do": "download",
+          "ext": ".png"
+        }
+      ]
+    },
+    "gemini.video": {
+      "name": "Gemini 영상 (Veo)",
+      "kind": "video",
+      "ext": ".mp4",
+      "steps": [
+        {
+          "do": "goto",
+          "url": "https://gemini.google.com/app"
+        },
+        {
+          "do": "waitFor",
+          "timeout": 30000
+        },
+        {
+          "do": "upload",
+          "file": "{{image}}"
+        },
+        {
+          "do": "fill",
+          "text": "Create a video from this image ({{aspect}}, about {{seconds}} seconds). {{prompt}}"
+        },
+        {
+          "do": "submit"
+        },
+        {
+          "do": "waitResult",
+          "kind": "video",
+          "timeout": 900000,
+          "stableMs": 8000
+        },
+        {
+          "do": "download",
+          "ext": ".mp4"
+        }
+      ]
+    },
+    "grok.image": {
+      "name": "Grok Imagine 이미지",
+      "kind": "image",
+      "ext": ".jpg",
+      "steps": [
+        {
+          "do": "goto",
+          "url": "https://grok.com/imagine"
+        },
+        {
+          "do": "waitFor",
+          "timeout": 30000
+        },
+        {
+          "do": "clickText",
+          "texts": [
+            "Image",
+            "이미지"
+          ],
+          "optional": true
+        },
+        {
+          "do": "upload",
+          "file": "{{reference}}",
+          "when": "reference",
+          "optional": true
+        },
+        {
+          "do": "fill",
+          "text": "{{prompt}} --ar {{aspect}}"
+        },
+        {
+          "do": "submit"
+        },
+        {
+          "do": "waitResult",
+          "kind": "image",
+          "timeout": 300000
+        },
+        {
+          "do": "download",
+          "ext": ".jpg"
+        }
+      ]
+    },
+    "grok.video": {
+      "name": "Grok Imagine 영상",
+      "kind": "video",
+      "ext": ".mp4",
+      "steps": [
+        {
+          "do": "goto",
+          "url": "https://grok.com/imagine"
+        },
+        {
+          "do": "waitFor",
+          "timeout": 30000
+        },
+        {
+          "do": "clickText",
+          "texts": [
+            "Video",
+            "동영상",
+            "영상"
+          ],
+          "optional": true
+        },
+        {
+          "do": "upload",
+          "file": "{{image}}"
+        },
+        {
+          "do": "fill",
+          "text": "{{prompt}}"
+        },
+        {
+          "do": "submit"
+        },
+        {
+          "do": "waitResult",
+          "kind": "video",
+          "timeout": 900000,
+          "stableMs": 8000
+        },
+        {
+          "do": "download",
+          "ext": ".mp4"
+        }
+      ]
+    },
+    "chatgpt.image": {
+      "name": "ChatGPT 이미지",
+      "kind": "image",
+      "ext": ".png",
+      "steps": [
+        {
+          "do": "goto",
+          "url": "https://chatgpt.com/"
+        },
+        {
+          "do": "waitFor",
+          "any": [
+            "#prompt-textarea",
+            "[contenteditable='true']",
+            "textarea"
+          ],
+          "timeout": 30000
+        },
+        {
+          "do": "upload",
+          "file": "{{reference}}",
+          "when": "reference",
+          "optional": true
+        },
+        {
+          "do": "fill",
+          "any": [
+            "#prompt-textarea",
+            "[contenteditable='true']",
+            "textarea"
+          ],
+          "text": "Create an image ({{aspect}}). {{prompt}}"
+        },
+        {
+          "do": "submit",
+          "any": [
+            "button[data-testid='send-button']",
+            "#composer-submit-button"
+          ]
+        },
+        {
+          "do": "waitResult",
+          "kind": "image",
+          "timeout": 400000,
+          "stableMs": 8000
+        },
+        {
+          "do": "download",
+          "ext": ".png"
+        }
+      ]
+    }
+  }
+}
