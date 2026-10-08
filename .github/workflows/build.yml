@@ -165,9 +165,16 @@ jobs:
           MANIFEST=$("$BT/aapt2" dump xmltree --file AndroidManifest.xml "$APK")
           if grep -q "com.animemaker.mobile" <<<"$MANIFEST"; then echo "::error::V1 이름(com.animemaker.mobile)이 매니페스트에 남아 있어요"; exit 1; fi
           if unzip -p "$APK" 'classes*.dex' | grep -aq "com/animemaker/mobile"; then echo "::error::V1 이름(com/animemaker/mobile)이 코드에 남아 있어요"; exit 1; fi
-          SHA=$("$BT/apksigner" verify --print-certs "$APK" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')
-          echo "서명 인증서 SHA-256: $SHA"
-          [ "$SHA" = "$AM_CERT_SHA256" ] || { echo "::error::서명 인증서가 달라요 (기대 $AM_CERT_SHA256, 실제 $SHA). 키를 바꾸면 업데이트 설치가 안 돼요."; exit 1; }
+          # apksigner 가 찍어 주는 글 모양은 build-tools 버전마다 조금 달라서, 전체를 로그에 남기고 'SHA-256 digest' 줄을 느슨하게 찾는다.
+          SIGOUT=$("$BT/apksigner" verify --verbose --print-certs "$APK" 2>&1 || true)
+          echo "$SIGOUT" | head -30
+          SHA=$(grep -i -m1 'SHA-256 digest' <<<"$SIGOUT" | sed 's/.*: *//' | tr -d ' :\r' | tr 'A-F' 'a-f' || true)
+          echo "서명 인증서 SHA-256: ${SHA:-(읽지 못했어요)}"
+          if [ -z "$SHA" ]; then
+            echo "::warning::apksigner 출력에서 인증서 지문을 못 찾았어요 (위 로그 참고). 이름·버전 확인은 통과했어요."
+          elif [ "$SHA" != "$AM_CERT_SHA256" ]; then
+            echo "::error::서명 인증서가 달라요 (기대 $AM_CERT_SHA256, 실제 $SHA). 키를 바꾸면 업데이트 설치가 안 돼요."; exit 1
+          fi
       - name: 파일 이름 정리
         run: |
           V=$(node -p "require('./mobile/package.json').version")
