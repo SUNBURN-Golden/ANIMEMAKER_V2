@@ -331,6 +331,9 @@ function registerIpc() {
       return buf.toString('utf8');
     } catch (_) { return ''; }
   });
+  // 편집 · 가사 자막 (새 IPC 는 ipc/ 폴더의 파일에 모은다)
+  require('./ipc/edit')(h, { store, getRunner });
+  require('./ipc/subs')(h, { store, getRunner });
   h('proj:setProviders', (id, providers, helperSites) => {
     const r = getRunner(id);
     if (r.running) throw new Error('진행 중에는 바꿀 수 없습니다.');

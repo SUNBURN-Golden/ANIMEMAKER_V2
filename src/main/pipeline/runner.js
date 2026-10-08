@@ -1167,4 +1167,7 @@ class ProjectRunner extends EventEmitter {
   }
 }
 
+// 편집 · 가사 자막 메서드는 별도 파일에서 섞어 넣는다 (DESIGN §3.1)
+Object.assign(ProjectRunner.prototype, require('./edits'), require('./subs'));
+
 module.exports = { ProjectRunner, STEPS, STEP_LABELS };
