@@ -1,92 +1,54 @@
 'use strict';
-// 가사 자막을 예쁜 PNG 이미지로 그린다 (윈도우 기본 한글 글꼴 '맑은 고딕' 사용).
-// Electron 의 보이지 않는 창에서 canvas 로 그리므로 글꼴 문제가 없다.
+// 가사 자막을 예쁜 PNG 이미지로 그린다.
+// Electron 의 보이지 않는 창에서 canvas 로 그리므로 내 PC 의 글꼴 사정에 덜 흔들린다.
+// 그리는 코드는 미리보기·모바일과 같은 공용 모듈(src/shared/subtitle-render.js)이고,
+// 창은 data: 주소가 아니라 파일(subtitle-canvas.html)로 열어야 번들 글꼴이 읽힌다.
 const fs = require('fs');
 const path = require('path');
+const S = require('../shared/subtitle-style');
 
-const HTML = `<!doctype html><html><head><meta charset="utf-8"></head><body>
-<canvas id="c"></canvas>
-<script>
-window.renderLine = async function (text, o) {
-  const c = document.getElementById('c');
-  const ctx = c.getContext('2d');
-  const font = 'bold ' + o.size + 'px "Malgun Gothic", "맑은 고딕", "Apple SD Gothic Neo", "Noto Sans KR", "Noto Sans CJK KR", sans-serif';
-  ctx.font = font;
-  try { await document.fonts.load(font, text); } catch (e) {}
-  ctx.font = font;
-  const maxW = o.w * 0.88;
-  const words = String(text).split(/(\\s+)/);
-  const lines = [];
-  let cur = '';
-  for (const wd of words) {
-    const t = cur + wd;
-    if (ctx.measureText(t.trim()).width > maxW && cur.trim()) { lines.push(cur.trim()); cur = wd.trimStart(); }
-    else cur = t;
-  }
-  if (cur.trim()) lines.push(cur.trim());
-  // 공백 없이 긴 줄은 글자 단위로 자르기
-  const final = [];
-  for (const ln of lines) {
-    if (ctx.measureText(ln).width <= maxW) { final.push(ln); continue; }
-    let part = '';
-    for (const ch of ln) { if (ctx.measureText(part + ch).width > maxW) { final.push(part); part = ch; } else part += ch; }
-    if (part) final.push(part);
-  }
-  const lh = Math.round(o.size * 1.3);
-  const padX = Math.round(o.size * 0.6), padY = Math.round(o.size * 0.35);
-  let textW = 0;
-  for (const ln of final) textW = Math.max(textW, ctx.measureText(ln).width);
-  c.width = Math.ceil(textW + padX * 2 + o.size * 0.4);
-  c.height = Math.ceil(final.length * lh + padY * 2);
-  ctx.font = font;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  if (o.box) {
-    ctx.fillStyle = 'rgba(0,0,0,0.55)';
-    const r = Math.round(o.size * 0.35);
-    ctx.beginPath();
-    ctx.roundRect(0, 0, c.width, c.height, r);
-    ctx.fill();
-  }
-  final.forEach((ln, i) => {
-    const y = padY + lh * i + lh / 2;
-    if (!o.box) {
-      ctx.lineJoin = 'round';
-      ctx.lineWidth = Math.max(3, o.size * 0.16);
-      ctx.strokeStyle = 'rgba(0,0,0,0.9)';
-      ctx.strokeText(ln, c.width / 2, y);
-    }
-    ctx.shadowColor = 'rgba(0,0,0,0.5)';
-    ctx.shadowBlur = o.size * 0.15;
-    ctx.fillStyle = o.color === 'yellow' ? '#ffe14d' : '#ffffff';
-    ctx.fillText(ln, c.width / 2, y);
-    ctx.shadowBlur = 0;
-  });
-  return { url: c.toDataURL('image/png'), height: c.height, width: c.width };
-};
-</script></body></html>`;
+const PAGE = path.join(__dirname, 'subtitle-canvas.html');
 
 /**
- * @param {{text:string,start:number,end:number}[]} lyrics
- * @returns {Promise<{file:string,start:number,end:number,y:number}[]>}
+ * @param {{text:string,start:number,end:number}[]} lyrics 보여 줄 줄들 (숨긴 줄은 미리 빼고 넘긴다)
+ * @param {{w:number,h:number,style?:object,outDir:string,log?:(msg:string)=>void}} o
+ *   w,h = 영상 출력 크기, style = 어떤 형식이든(옛 형식도) 되는 자막 스타일, log = 알림 글 남기기(선택)
+ * @returns {Promise<{file:string,start:number,end:number,x:number,y:number,w:number,h:number,fade:number}[]>}
+ *   x,y = 영상 위 PNG 의 왼쪽 위 (기본은 가운데, 안전영역·위치 반영)
  */
-async function renderSubtitlePngs(lyrics, { w, h, style = {}, outDir }) {
+async function renderSubtitlePngs(lyrics, { w, h, style = {}, outDir, log }) {
   const { BrowserWindow } = require('electron');
+  const st = S.normalizeStyle(style, { w, h });
   fs.mkdirSync(outDir, { recursive: true });
-  const win = new BrowserWindow({ show: false, width: 800, height: 400, webPreferences: { sandbox: true, contextIsolation: true } });
+  // 지난번 파일이 남아 있으면 헷갈리니 먼저 치운다
+  for (const f of fs.readdirSync(outDir)) if (/^line\d+\.png$/.test(f)) { try { fs.unlinkSync(path.join(outDir, f)); } catch (_) { /* noop */ } }
+  const win = new BrowserWindow({ show: false, width: 800, height: 400, webPreferences: { sandbox: true, contextIsolation: true, backgroundThrottling: false } });
   try {
-    await win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(HTML)}`);
-    const size = Math.round(((style.sizePct || 4.6) / 100) * h);
-    const margin = Math.round(((style.marginPct || 10) / 100) * h);
+    await win.loadFile(PAGE);
+    const run = (code) => win.webContents.executeJavaScript(code);
+    const sample = lyrics.map((l) => l.text).join('');
+    const prep = await run(`window.AMSubs.prepare(${JSON.stringify(st)}, ${JSON.stringify(sample)})`);
+    let use = st;
+    if (prep && prep.fallback) {
+      use = { ...st, font: 'system' };
+      if (log) log(`⚠ 고른 글꼴을 불러오지 못해서 내 컴퓨터 기본 글꼴로 그렸어요. (${prep.reason || '이유 모름'})`);
+    }
     const out = [];
+    const seen = new Map(); // 같은 글은 그림 한 장을 같이 쓴다 (후렴이 되풀이될 때)
     for (let i = 0; i < lyrics.length; i++) {
       const l = lyrics[i];
-      const r = await win.webContents.executeJavaScript(
-        `window.renderLine(${JSON.stringify(l.text)}, ${JSON.stringify({ w, size, color: style.color, box: !!style.box })})`,
-      );
-      const file = path.join(outDir, `line${String(i + 1).padStart(3, '0')}.png`);
-      fs.writeFileSync(file, Buffer.from(r.url.split(',')[1], 'base64'));
-      out.push({ file, start: l.start, end: l.end, y: Math.max(0, h - margin - r.height) });
+      const text = String(l.text == null ? '' : l.text);
+      if (!text.trim()) continue;
+      let r = seen.get(text);
+      if (!r) {
+        const res = await run(`window.AMSubs.render(${JSON.stringify(text)}, ${JSON.stringify(use)}, ${w}, ${h})`);
+        if (!res) continue;
+        const file = path.join(outDir, `line${String(seen.size + 1).padStart(3, '0')}.png`);
+        fs.writeFileSync(file, Buffer.from(res.png, 'base64'));
+        r = { file, x: res.x, y: res.y, w: res.w, h: res.h };
+        seen.set(text, r);
+      }
+      out.push({ file: r.file, start: l.start, end: l.end, x: r.x, y: r.y, w: r.w, h: r.h, fade: st.fade });
     }
     return out;
   } finally {

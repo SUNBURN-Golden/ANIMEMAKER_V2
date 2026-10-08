@@ -40,8 +40,9 @@
         h('div', { style: { fontWeight: 700 } }, `${w.emoji || '🎞️'} ${w.name}`),
         h('div', { class: 'small muted' }, w.builtin ? '기본 제공 (복사해서 수정)' : '내 워크플로우'))));
     return h('div', null,
-      h('h1', { class: 'page-title' }, '🧩 워크플로우'),
-      h('p', { class: 'page-sub' }, '워크플로우는 "어떤 틀로 만들지" 정해 두는 규칙 묶음이에요 (화면 비율, 컷 수, 그림 장수, 필름 느낌, 자막). 주인공과 그림체는 시리즈가 정해요.'),
+      h('div', { class: 'row', style: { marginBottom: '8px' } }, h('button', { class: 'btn small', onclick: () => AM.go('settings') }, '← 설정으로')),
+      h('h1', { class: 'page-title' }, '🧩 영상 규칙 (워크플로우)'),
+      h('p', { class: 'page-sub' }, '영상 규칙은 "어떤 틀로 만들지" 정해 두는 규칙 묶음이에요 (화면 비율, 컷 수, 그림 장수, 필름 느낌, 자막). 주인공과 그림 느낌은 이야기 모음(시리즈)이 정해요. 가로·세로·네모 같은 쉬운 선택은 [🎬 만들기] 의 [바꾸기] 에서 해요.'),
       h('div', { class: 'wf-layout' }, listEl, editor(wf)));
   };
 
@@ -121,7 +122,7 @@
           field('움직이는 장면의 그림 수', f.keyRate, '6장 = 그림 한 장을 4프레임, 8장 = 3프레임 (더 부드럽지만 그림이 더 필요). 리미티드에서는 쓰지 않아요.'),
           field('사이 그림 (내 PC)', f.inbetween, '자동 = RIFE 가 되면 RIFE, 안 되면 ffmpeg. RIFE 는 설치 파일에 들어 있고, 그래픽카드가 없으면 CPU 로 해서 느릴 수 있어요. 끄기 = 열쇠 그림만 넘기기.')),
         h('div', { style: { marginTop: '10px' } }, f.layers.el)),
-      h('div', { class: 'section' }, h('h3', null, '🎞 손그림 필름 느낌 (렌더링할 때 입혀요)'),
+      h('div', { class: 'section' }, h('h3', null, '🎞 손그림 필름 느낌 (영상을 만들 때 입혀요)'),
         h('div', { class: 'col' }, f.boil.el, f.grain.el, f.vignette.el, f.warm.el, f.paper.el)),
       h('div', { class: 'section' }, h('h3', null, '💬 가사 자막'),
         f.subOn.el,
@@ -132,7 +133,7 @@
         h('details', { class: 'adv', style: { marginTop: '12px' } }, h('summary', null, '고급: 시리즈 없이 만들 때의 그림체 · 추가 지시'),
           h('div', { class: 'col', style: { marginTop: '10px' } },
             field('그림체 (영어, 시리즈가 있으면 시리즈 그림체를 따라요)', f.visualStyle), stylePresets,
-            field('기획·타임시트 AI 에게 추가로 전할 말', f.extraInstructions, '예) 마지막 장면은 꼭 해피엔딩 / 대사는 넣지 말 것 / 비 오는 장면을 많이')))),
+            field('이야기·그림 순서표 AI 에게 추가로 전할 말', f.extraInstructions, '예) 마지막 장면은 꼭 해피엔딩 / 대사는 넣지 말 것 / 비 오는 장면을 많이')))),
       h('div', { class: 'row', style: { justifyContent: 'flex-end' } },
         ro ? null : h('button', { class: 'btn danger', onclick: del }, '삭제'),
         ro ? null : h('button', { class: 'btn primary big', onclick: save }, '💾 저장')));

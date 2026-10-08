@@ -1,5 +1,5 @@
 'use strict';
-/* 시리즈 화면: 고정 주인공 + 그림체 약속(스타일 바이블) + 에피소드 기록 */
+/* 이야기 모음(시리즈) 화면 — 주인공 화면의 '고급' 에서 들어온다: 고정 주인공 + 그림 느낌 약속 + 지난 이야기 기록 */
 (function (AM) {
   const { h } = AM;
   AM.views = AM.views || {};
@@ -16,10 +16,10 @@
       onclick: async () => {
         demoBtn.disabled = true;
         demoBtn.textContent = '☔ 만드는 중…';
-        const s = await AM.safe(() => window.api.createDemoSeries(), '체험용 캐릭터 "하루" 와 시리즈를 만들었어요.');
-        if (s) AM.go('series', s.id); else { demoBtn.disabled = false; demoBtn.textContent = '☔ 체험용 시리즈 만들기'; }
+        const s = await AM.safe(() => window.api.createDemoSeries(), '연습용 주인공 "하루" 와 이야기 모음을 만들었어요.');
+        if (s) AM.go('series', s.id); else { demoBtn.disabled = false; demoBtn.textContent = '☔ 연습용 시리즈 만들기'; }
       },
-    }, '☔ 체험용 시리즈 만들기');
+    }, '☔ 연습용 시리즈 만들기');
     const listEl = h('div', { class: 'wf-list' },
       h('button', {
         class: 'btn primary',
@@ -33,17 +33,18 @@
         s.characters[0] && s.characters[0].thumb ? h('img', { src: AM.fileUrl(s.characters[0].thumb) }) : h('span', { class: 'char-ph' }, s.emoji),
         h('div', null,
           h('div', { style: { fontWeight: 700 } }, `${s.emoji} ${s.name}`),
-          h('div', { class: 'small muted' }, `에피소드 ${s.episodes.length}개 · 주인공 ${s.characters[0] ? s.characters[0].name : '없음'}`)))));
+          h('div', { class: 'small muted' }, `만든 영상 ${s.episodes.length}개 · 주인공 ${s.characters[0] ? s.characters[0].name : '없음'}`)))));
     return h('div', null,
-      h('h1', { class: 'page-title' }, '📺 시리즈'),
-      h('p', { class: 'page-sub' }, '시리즈는 "같은 주인공, 같은 그림체" 로 이어지는 뮤직비디오 묶음이에요. 에피소드를 만들 때마다 지난 이야기를 기억해서 이어 가요.'),
+      h('div', { class: 'row', style: { marginBottom: '8px' } }, h('button', { class: 'btn small', onclick: () => AM.go('hero', cur ? cur.characterIds[0] : undefined) }, '← 주인공으로')),
+      h('h1', { class: 'page-title' }, '📺 이야기 모음 (시리즈)'),
+      h('p', { class: 'page-sub' }, '이야기 모음은 "같은 주인공, 같은 그림 느낌" 으로 이어지는 영상 묶음이에요. 영상을 만들 때마다 지난 이야기를 기억해서 이어 가요.'),
       h('div', { class: 'wf-layout' }, listEl, cur ? editor(cur, chars) : h('div', { class: 'section' },
         h('p', null, '아직 시리즈가 없어요.'),
         h('ol', null,
-          h('li', null, '[🧒 캐릭터] 에서 주인공을 만들고 잠가요.'),
+          h('li', null, '[🧒 주인공] 에서 주인공을 만들고 정해요.'),
           h('li', null, '[＋ 새 시리즈 만들기] 로 시리즈를 만들고 주인공을 골라요.'),
-          h('li', null, '[🎬 새 에피소드 만들기] 에서 노래를 올려요.')),
-        h('p', { class: 'muted small' }, '바로 구경하고 싶으면 [☔ 체험용 시리즈 만들기] 를 누르세요. 체험용 주인공 "하루" 가 생겨요.'))));
+          h('li', null, '[🎬 만들기] 에서 노래를 올려요.')),
+        h('p', { class: 'muted small' }, '바로 구경하고 싶으면 [☔ 연습용 시리즈 만들기] 를 누르세요. 연습용 주인공 "하루" 가 생겨요.'))));
   };
 
   function editor(s, chars) {
@@ -83,30 +84,30 @@
     return h('div', null,
       h('div', { class: 'section' },
         h('div', { class: 'row' },
-          h('div', { class: 'grow' }, h('h3', null, `${s.emoji} ${s.name}`), h('p', { class: 'desc' }, `다음 에피소드: EP${next}`)),
+          h('div', { class: 'grow' }, h('h3', null, `${s.emoji} ${s.name}`), h('p', { class: 'desc' }, `다음 영상: ${next}화`)),
           h('button', {
             class: 'btn primary big', disabled: !ready,
             onclick: () => AM.go('home', s.id),
-          }, `🎬 EP${next} 만들러 가기`)),
-        ready ? null : h('div', { class: 'notice warn' }, '주인공을 고르고, 모든 캐릭터가 🔒 잠겨 있어야 에피소드를 만들 수 있어요. ',
-          h('a', { href: '#', onclick: (e) => { e.preventDefault(); AM.go('characters', s.characterIds[0] || null); } }, '캐릭터 화면으로 가기'))),
+          }, `🎬 ${next}화 만들러 가기`)),
+        ready ? null : h('div', { class: 'notice warn' }, '주인공을 고르고, 모든 캐릭터가 🔒 잠겨 있어야 영상을 만들 수 있어요. ',
+          h('a', { href: '#', onclick: (e) => { e.preventDefault(); AM.go('characters', s.characterIds[0] || null); } }, '캐릭터 파일 화면으로 가기'))),
       h('div', { class: 'section' }, h('h3', null, '① 이름 · 주인공'),
         h('div', { class: 'grid3' }, h('label', { class: 'field' }, '아이콘', emoji), h('label', { class: 'field', style: { gridColumn: 'span 2' } }, '시리즈 이름', name)),
         h('div', { class: 'grid2', style: { marginTop: '12px' } },
-          h('label', { class: 'field' }, '⭐ 주인공 (고정)', hero, h('span', { class: 'hint' }, '모든 에피소드의 주인공이에요. AI 가 이름이나 모습을 바꾸지 못해요.')),
+          h('label', { class: 'field' }, '⭐ 주인공 (고정)', hero, h('span', { class: 'hint' }, '모든 영상의 주인공이에요. AI 가 이름이나 모습을 바꾸지 못해요.')),
           h('div', { class: 'field' }, h('span', null, '함께 나오는 친구 (고정, 선택)'), h('div', { class: 'col', style: { marginTop: '4px' } }, friends.length > 1 ? friends.map((f) => f.el) : h('span', { class: 'small muted' }, '다른 캐릭터가 없어요.')))),
-        locked.length ? null : h('div', { class: 'notice info small' }, '잠긴 캐릭터가 아직 없어요. [🧒 캐릭터] 에서 만들고 잠가 주세요.')),
-      h('div', { class: 'section' }, h('h3', null, '② 그림체 약속 (모든 에피소드 똑같이)'),
+        locked.length ? null : h('div', { class: 'notice info small' }, '잠긴 캐릭터가 아직 없어요. [🧒 주인공] 에서 만들고 정해 주세요.')),
+      h('div', { class: 'section' }, h('h3', null, '② 그림 느낌 약속 (모든 영상 똑같이)'),
         h('p', { class: 'desc' }, '그림 AI 에게 보내는 그림체 설명이에요 (영어). 아래 예시를 누르면 들어가요.'),
         art,
         h('div', { class: 'presets' }, presets.map(([l, v]) => h('span', { class: 'chip click', onclick: () => { art.value = v; } }, l))),
         h('div', { class: 'grid2', style: { marginTop: '12px' } },
           h('label', { class: 'field' }, '🌍 세계 · 배경 (한국어)', world),
           h('label', { class: 'field' }, '💗 분위기 (한국어)', tone)),
-        h('details', { class: 'adv', style: { marginTop: '10px' } }, h('summary', null, '고급: 시리즈 규칙 · 기본 워크플로우'),
+        h('details', { class: 'adv', style: { marginTop: '10px' } }, h('summary', null, '고급: 시리즈 규칙 · 기본 영상 규칙'),
           h('div', { class: 'grid2', style: { marginTop: '8px' } },
             h('label', { class: 'field' }, '시리즈 규칙 (영어, 모든 그림에 들어가요)', notes),
-            h('label', { class: 'field' }, '기본 워크플로우', wfSel)))),
+            h('label', { class: 'field' }, '기본 영상 규칙(워크플로우)', wfSel)))),
       h('div', { class: 'row', style: { justifyContent: 'flex-end', marginBottom: '18px' } },
         h('button', {
           class: 'btn danger ghost',
@@ -124,26 +125,26 @@
       const ta = h('textarea', { rows: 2 });
       ta.value = e.summary_ko;
       return h('div', { class: 'ep-row' },
-        h('div', { class: 'ep-no' }, `EP${e.number}`),
+        h('div', { class: 'ep-no' }, `${e.number}화`),
         h('div', { class: 'grow col' },
           h('b', null, e.title || '(제목 없음)'),
           ta,
           h('div', { class: 'row', style: { gap: '6px' } },
             h('span', { class: 'small muted grow' }, AM.fmtDate(e.madeAt)),
-            e.projectId ? h('button', { class: 'btn small', onclick: () => AM.go('project', e.projectId) }, '📂 작업 열기') : null,
+            e.projectId ? h('button', { class: 'btn small', onclick: () => AM.go('project', e.projectId) }, '📂 영상 열기') : null,
             h('button', { class: 'btn small', onclick: () => AM.safe(() => window.api.updateEpisode(s.id, e.number, { summary_ko: ta.value.trim() }), '요약을 고쳤어요') }, '💾 요약 저장'),
             h('button', {
               class: 'btn small ghost danger',
               onclick: async () => {
-                if (!await AM.confirmBox('기록에서 빼기', `EP${e.number} 를 이야기 기록에서 뺄까요? 다음 에피소드의 AI 가 이 이야기를 모르게 돼요. (영상 파일은 그대로)`, '빼기', 'danger')) return;
+                if (!await AM.confirmBox('기록에서 빼기', `${e.number}화 를 이야기 기록에서 뺄까요? 다음 영상의 AI 가 이 이야기를 모르게 돼요. (영상 파일은 그대로)`, '빼기', 'danger')) return;
                 if (await AM.safe(() => window.api.updateEpisode(s.id, e.number, null), '뺐어요')) AM.go('series', s.id);
               },
             }, '✕'))));
     });
     return h('div', { class: 'section' },
       h('h3', null, `📚 지난 이야기 (${s.episodes.length}편)`),
-      h('p', { class: 'desc' }, '에피소드가 완성되면 2~3줄 요약이 여기에 쌓여요. 다음 에피소드를 기획할 때 AI 가 이 요약을 읽고 이야기를 이어 가요. 요약은 직접 고칠 수 있어요.'),
-      rows.length ? rows : h('div', { class: 'muted small' }, '아직 완성된 에피소드가 없어요.'));
+      h('p', { class: 'desc' }, '영상이 완성되면 2~3줄 요약이 여기에 쌓여요. 다음 영상의 이야기를 짤 때 AI 가 이 요약을 읽고 이야기를 이어 가요. 요약은 직접 고칠 수 있어요.'),
+      rows.length ? rows : h('div', { class: 'muted small' }, '아직 완성된 영상이 없어요.'));
   }
 
 }(window.AM));

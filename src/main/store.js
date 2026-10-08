@@ -132,6 +132,10 @@ class Store {
       steps: {},
     };
     if (project.series) project.title = `${project.series.name} EP${project.series.episode}`;
+    // 시리즈의 기본 자막 모양이 있으면 에피소드마다 자기 사본으로 갖는다 (켜기/끄기는 워크플로우 설정을 따른다)
+    if (series && series.subtitleStyle) {
+      project.workflow.subtitles = { ...series.subtitleStyle, enabled: !(workflow.subtitles && workflow.subtitles.enabled === false) };
+    }
     if (media.songPath) {
       fs.mkdirSync(path.join(dir, 'music'), { recursive: true });
       const ext = path.extname(media.songPath).toLowerCase() || '.mp3';

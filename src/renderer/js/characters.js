@@ -46,9 +46,10 @@
           h('div', { style: { fontWeight: 700 } }, c.name),
           h('div', { class: 'small muted' }, c.isLocked ? `🔒 잠김 · v${c.version}` : `✏️ 만드는 중 · 기준 그림 ${c.refs.length}장`)))));
     return h('div', null,
-      h('h1', { class: 'page-title' }, '🧒 캐릭터'),
-      h('p', { class: 'page-sub' }, '주인공을 한 번 만들어 잠가 두면, 모든 에피소드에서 똑같은 얼굴·머리·옷으로 나와요. 그림을 그릴 때마다 기준 그림과 설명을 꼭 붙여 보내거든요.'),
-      list.length ? null : h('div', { class: 'notice info' }, '아직 캐릭터가 없어요. [＋ 새 캐릭터 만들기] 를 누르거나, 친구가 준 캐릭터 파일(.amchar)을 가져오세요. 체험만 해 보려면 [📺 시리즈] 에서 [☔ 체험용 시리즈 만들기] 를 눌러도 돼요.'),
+      h('div', { class: 'row', style: { marginBottom: '8px' } }, h('button', { class: 'btn small', onclick: () => AM.go('hero', cur ? cur.id : undefined) }, '← 주인공으로')),
+      h('h1', { class: 'page-title' }, '🔧 캐릭터 파일 (자세히 편집)'),
+      h('p', { class: 'page-sub' }, '주인공을 한 번 만들어 잠가 두면, 모든 영상에서 똑같은 얼굴·머리·옷으로 나와요. 그림을 그릴 때마다 기준 그림과 설명을 꼭 붙여 보내거든요.'),
+      list.length ? null : h('div', { class: 'notice info' }, '아직 캐릭터가 없어요. [＋ 새 캐릭터 만들기] 를 누르거나, 친구가 준 캐릭터 파일(.amchar)을 가져오세요. 쉽게 하려면 [← 주인공으로] 가서 이름과 모습만 적어도 돼요.'),
       h('div', { class: 'wf-layout' }, listEl, cur ? editor(cur) : h('div', { class: 'section muted' }, '왼쪽에서 캐릭터를 고르거나 새로 만들어 주세요.')));
   };
 
@@ -108,17 +109,17 @@
         if (r.palette.length) { palette = r.palette.map((p) => ({ ...p })); renderPal(); }
         if (r.rules.must.length) must.value = r.rules.must.join('\n');
         if (r.rules.never.length) never.value = r.rules.never.join('\n');
-        toast(r.demo ? '체험 모드라서 예시 설명을 넣었어요. 고친 뒤 [💾 저장] 을 눌러 주세요.' : '정리했어요. 확인하고 [💾 저장] 을 눌러 주세요.', 'ok');
+        toast(r.demo ? '연습 모드라서 예시 설명을 넣었어요. 고친 뒤 [💾 저장] 을 눌러 주세요.' : '정리했어요. 확인하고 [💾 저장] 을 눌러 주세요.', 'ok');
       },
     }, '✨ AI 로 영어 설명 · 색 · 규칙 만들기');
 
     return h('div', null,
       locked
-        ? h('div', { class: 'notice ok' }, h('b', null, `🔒 잠긴 캐릭터 (버전 ${c.version})`), ' — 생김새·색·규칙·기준 그림이 고정되어 있어서 모든 에피소드에 똑같이 나와요. 이름과 성격은 바꿀 수 있어요.')
-        : h('div', { class: 'notice warn' }, '✏️ 아직 만드는 중이에요. ① 생김새 적기 → ② 기준 그림 넣기(직접 또는 AI) → ③ [🔒 잠그기] 순서로 해 주세요. 잠가야 에피소드에 쓸 수 있어요.'),
+        ? h('div', { class: 'notice ok' }, h('b', null, `🔒 잠긴 캐릭터 (버전 ${c.version})`), ' — 생김새·색·규칙·기준 그림이 고정되어 있어서 모든 영상에 똑같이 나와요. 이름과 성격은 바꿀 수 있어요.')
+        : h('div', { class: 'notice warn' }, '✏️ 아직 만드는 중이에요. ① 생김새 적기 → ② 기준 그림 넣기(직접 또는 AI) → ③ [🔒 잠그기] 순서로 해 주세요. 잠가야 영상에 쓸 수 있어요.'),
       h('div', { class: 'section' }, h('h3', null, '① 이름 · 성격'),
         h('div', { class: 'grid2' },
-          h('label', { class: 'field' }, '이름', name, h('span', { class: 'hint' }, '모든 에피소드에서 이 이름 그대로 나와요.')),
+          h('label', { class: 'field' }, '이름', name, h('span', { class: 'hint' }, '모든 영상에서 이 이름 그대로 나와요.')),
           h('label', { class: 'field' }, '성격 (한국어)', personality, h('span', { class: 'hint' }, '이야기를 쓸 때 참고해요.')))),
       h('div', { class: 'section' }, h('h3', null, '② 생김새 (단단한 기준)'),
         h('p', { class: 'desc' }, '그림 AI 는 영어를 가장 잘 알아들어요. 한국어로 적고 [✨ AI 로 …만들기] 를 누르면 영어로 정리해 줘요. 이 설명은 모든 그림 요청에 글자 그대로 들어가요.'),
@@ -163,7 +164,7 @@
           if (!saved.locked.summary && !saved.locked.outfit) { toast('먼저 ② 생김새(영어 설명)를 적어 주세요.', 'err'); return; }
           if (!canAuto) {
             const text = await AM.safe(() => window.api.characterRefPrompt(c.id, k, artText()));
-            if (text) AM.safe(() => window.api.copyText(text), '프롬프트를 복사했어요. 그림 사이트에 붙여넣어 그린 뒤, 받은 그림을 [📁 내 그림 넣기] 로 넣어 주세요.');
+            if (text) AM.safe(() => window.api.copyText(text), '그림 주문 글을 복사했어요. 그림 사이트에 붙여넣어 그린 뒤, 받은 그림을 [📁 내 그림 넣기] 로 넣어 주세요.');
             return;
           }
           b.disabled = true;
@@ -192,7 +193,7 @@
             },
           }, '📁 내 그림 넣기')),
         h('div', { class: 'row', style: { gap: '6px' } },
-          h('b', null, canAuto ? `AI 로 그리기 (${pinfo.short}):` : `프롬프트 복사 (${pinfo.short} 는 직접 그려요):`), ...genBtns),
+          h('b', null, canAuto ? `AI 로 그리기 (${pinfo.short}):` : `그림 주문 글 복사 (${pinfo.short} 는 직접 그려요):`), ...genBtns),
         h('div', { class: 'row', style: { gap: '6px' } }, h('span', { class: 'small muted' }, '그림체'), art,
           h('span', { class: 'small muted' }, '턴어라운드를 먼저 그리면, 표정·전신은 그 그림을 보고 똑같이 그려요.'))));
   }
@@ -203,7 +204,7 @@
       btns.push(h('button', {
         class: 'btn',
         onclick: async () => {
-          if (!await AM.confirmBox('잠금을 풀까요?', '잠금을 풀면 생김새·색·규칙·기준 그림을 고칠 수 있어요.\n다시 잠그면 버전이 하나 올라가요.\n\n이미 만든 에피소드는 예전 모습 그대로 남고, 새 에피소드부터 바뀐 모습이 나와요.', '잠금 풀기')) return;
+          if (!await AM.confirmBox('잠금을 풀까요?', '잠금을 풀면 생김새·색·규칙·기준 그림을 고칠 수 있어요.\n다시 잠그면 버전이 하나 올라가요.\n\n이미 만든 영상은 예전 모습 그대로 남고, 새 영상부터 바뀐 모습이 나와요.', '잠금 풀기')) return;
           if (await AM.safe(() => window.api.unlockCharacter(c.id), '잠금을 풀었어요')) AM.go('characters', c.id);
         },
       }, '🔓 잠금 풀기'));
@@ -212,8 +213,11 @@
         class: 'btn primary big',
         onclick: async () => {
           if (!await save(true)) return;
-          if (!await AM.confirmBox('이 모습으로 잠글까요?', '잠그면 이 설명과 기준 그림이 "단단한 기준" 이 되어, 모든 에피소드의 그림이 이 모습을 따라요.\n(나중에 잠금을 풀 수도 있어요)', '🔒 잠그기')) return;
-          if (await AM.safe(() => window.api.lockCharacter(c.id), '잠갔어요! 이제 시리즈에 넣어 에피소드를 만들 수 있어요.')) AM.go('characters', c.id);
+          if (!await AM.confirmBox('이 모습으로 잠글까요?', '잠그면 이 설명과 기준 그림이 "단단한 기준" 이 되어, 모든 영상의 그림이 이 모습을 따라요.\n(나중에 잠금을 풀 수도 있어요)', '🔒 잠그기')) return;
+          if (await AM.safe(() => window.api.lockCharacter(c.id), '잠갔어요! 이제 [🎬 만들기] 에서 이 주인공으로 영상을 만들 수 있어요.')) {
+            try { await AM.hero.ensureSeries(c); } catch (_) { /* 시리즈는 나중에 만들기 화면이 알아서 만든다 */ }
+            AM.go('characters', c.id);
+          }
         },
       }, '🔒 이 모습으로 잠그기'));
     }
@@ -221,7 +225,7 @@
     btns.push(h('button', {
       class: 'btn danger ghost',
       onclick: async () => {
-        if (!await AM.confirmBox('캐릭터 삭제', `"${c.name}" 캐릭터를 지울까요? 이미 만든 에피소드에는 영향이 없어요.`, '삭제', 'danger')) return;
+        if (!await AM.confirmBox('캐릭터 삭제', `"${c.name}" 캐릭터를 지울까요? 이미 만든 영상에는 영향이 없어요.`, '삭제', 'danger')) return;
         if (await AM.safe(() => window.api.deleteCharacter(c.id), '지웠어요')) { selected = null; AM.go('characters'); }
       },
     }, '🗑 삭제'));

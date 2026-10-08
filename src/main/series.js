@@ -5,6 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { DEFAULT_ART_STYLE } = require('./defaults');
+const { normalizeStyle } = require('../shared/subtitle-style');
 
 function readJson(file, fallback) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch (_) { return fallback; }
@@ -31,6 +32,13 @@ function normalizeEpisode(e) {
   };
 }
 
+/** 시리즈 전체의 기본 자막 모양 (정규화해서 저장, enabled 는 에피소드마다 따로 정하므로 뺀다). 없으면 null */
+function normalizeSubtitleStyle(v) {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  const { enabled, ...look } = normalizeStyle(v); // eslint-disable-line no-unused-vars
+  return look;
+}
+
 function normalizeSeries(o = {}) {
   const b = o.bible && typeof o.bible === 'object' ? o.bible : {};
   return {
@@ -45,6 +53,7 @@ function normalizeSeries(o = {}) {
       notes_en: clean(b.notes_en, 800),
     },
     workflowId: String(o.workflowId || ''),
+    subtitleStyle: normalizeSubtitleStyle(o.subtitleStyle),
     episodeCounter: Math.max(0, Math.floor(Number(o.episodeCounter) || 0)),
     episodes: (Array.isArray(o.episodes) ? o.episodes : []).map(normalizeEpisode).sort((a, b) => a.number - b.number),
     createdAt: Number(o.createdAt) || Date.now(),
@@ -127,4 +136,4 @@ class SeriesStore {
   }
 }
 
-module.exports = { SeriesStore, normalizeSeries, normalizeEpisode };
+module.exports = { SeriesStore, normalizeSeries, normalizeEpisode, normalizeSubtitleStyle };

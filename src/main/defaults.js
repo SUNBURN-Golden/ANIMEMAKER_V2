@@ -65,7 +65,9 @@ const BASE_WORKFLOW = {
   transitionStyle: 'mixed',
   // 손그림 필름 느낌 마무리 (내 PC 에서 렌더링할 때 입힘)
   finish: { boil: true, grain: true, vignette: true, warm: true, paper: false },
-  subtitles: { enabled: true, sizePct: 4.6, color: 'white', box: false, marginPct: 8 },
+  // 가사 자막: 모양은 프리셋 이름 하나로 (basic = 흰 글씨 + 검은 테두리, 아래 8%). 다른 칸은 비워 두면 프리셋 값을 따른다 → src/shared/subtitle-style.js
+  // (예전 {sizePct, color:'white'|'yellow', box, marginPct} 형식도 그대로 읽는다)
+  subtitles: { enabled: true, preset: 'basic' },
   extraInstructions: '',
   lyricSyncPause: true, // 가사에 시간이 없으면 컷을 나누기 전에 '탭으로 가사 맞추기' 기회를 준다
   reviewAfterPlan: false,
@@ -95,6 +97,7 @@ const BUILTIN_WORKFLOWS = [
     maxClips: 30,
     minClipSec: 2,
     maxClipSec: 12,
+    subtitles: { enabled: true, preset: 'shorts' }, // 아주 큰 글씨 + 버튼에 안 가려지는 안전 영역
   },
   {
     ...BASE_WORKFLOW,

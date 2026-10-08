@@ -4,6 +4,7 @@
 const fs = require('fs');
 const path = require('path');
 const { runFfmpeg } = require('./ffmpeg');
+const S = require('../../shared/subtitle-style');
 
 const FPS = 24;
 
@@ -20,13 +21,52 @@ function outputSize(aspect, quality = '720p') {
   }
 }
 
-/** libass 용 ASS 자막 (PNG 자막을 만들 수 없을 때 사용) */
+/** ASS 색: '#rrggbb' + 불투명도(0~1) → &HAABBGGRR (ASS 의 AA 는 0 = 불투명) */
+function assColor(hex, opacity = 1) {
+  const c = S.normColor(hex, '#000000');
+  const aa = Math.round((1 - Math.min(1, Math.max(0, opacity))) * 255);
+  const h2 = (n) => n.toString(16).padStart(2, '0').toUpperCase();
+  return `&H${h2(aa)}${c.slice(5, 7)}${c.slice(3, 5)}${c.slice(1, 3)}`.toUpperCase();
+}
+
+/** 내 컴퓨터 기본 한글 글꼴 이름 (ASS 대체 경로에서만 쓴다) */
+function systemFontName() {
+  if (process.platform === 'win32') return 'Malgun Gothic';
+  if (process.platform === 'darwin') return 'Apple SD Gothic Neo';
+  return 'Noto Sans CJK KR';
+}
+
+/** libass 가 쓸 글꼴: { name, bold, k (크기 보정 비율), files:[번들 글꼴 파일 이름] } (files 는 src/renderer/assets/fonts 안 파일) */
+function assFont(styleFont) {
+  const f = S.FONT_BY_ID[styleFont] || S.FONT_BY_ID.pretendard;
+  if (!f.file) return { name: systemFontName(), bold: true, k: process.platform === 'win32' ? 1.25 : process.platform === 'darwin' ? 1.2 : 1.45, files: [] };
+  return { name: f.ass.name, bold: f.ass.bold, k: f.ass.k, files: [...new Set([f.file, S.FONT_BY_ID.pretendard.file])] };
+}
+
+/**
+ * libass 용 ASS 자막 (PNG 자막을 만들 수 없을 때 사용).
+ * PNG 자막과 같은 정규화 스타일을 읽어서 색 · 테두리 · 상자 · 위치 · 안전영역 · 글꼴이 최대한 같게 만든다.
+ * 줄바꿈은 libass 가 알아서 한다 (PNG 쪽의 균형 잡힌 줄바꿈과 조금 다를 수 있다). 숨긴 줄(hidden)은 넣지 않는다.
+ * @param {{text:string,start:number,end:number,hidden?:boolean}[]} lyrics
+ * @param {{w:number,h:number,style?:object}} o style 은 어떤 형식이든 된다 (옛 형식 포함)
+ */
 function buildAss(lyrics, { w, h, style = {} }) {
-  const font = style.font || (process.platform === 'win32' ? 'Malgun Gothic' : 'Noto Sans CJK KR');
-  const size = Math.round((style.sizePct || 4.2) / 100 * h);
-  const margin = Math.round((style.marginPct || 8) / 100 * h);
-  const primary = style.color === 'yellow' ? '&H0000E5FF' : '&H00FFFFFF';
-  const box = style.box ? 3 : 1;
+  const st = S.normalizeStyle(style, { w, h });
+  const m = S.layoutMetrics(st, w, h);
+  const font = assFont(st.font);
+  // libass 의 글자 크기는 글꼴의 줄 높이 기준이라 PNG(em 기준)보다 작게 보인다 → 글꼴마다 실측한 비율 k 로 맞춘다
+  const size = Math.round(m.fontPx * font.k);
+  const hasBox = st.box !== 'none';
+  const primary = assColor(st.color, 1);
+  // BorderStyle 3(불투명 상자)은 OutlineColour 로 상자를 칠한다
+  const outlineCol = hasBox ? assColor(st.boxColor, S.boxAlpha(st)) : assColor(st.outlineColor, S.outlineAlpha(st));
+  const back = assColor('#000000', 0.5);
+  const outline = hasBox ? Math.max(1, Math.round(m.fontPx * 0.2)) : (m.strokePx > 0 ? Math.max(1, Math.round(m.strokePx / 2)) : 0);
+  const shadow = st.shadow && !hasBox ? Math.max(1, Math.round(m.fontPx / 30)) : 0;
+  const align = st.position === 'top' ? 8 : st.position === 'middle' ? 5 : 2;
+  // 글자 줄의 가운데가 PNG 와 같은 높이에 오도록 안쪽으로 0.48em 더 밀어 준다 (실측: libass 의 줄 상자는 글꼴 줄 높이를 쓴다)
+  const marginV = st.position === 'top' ? m.topPx + Math.round(m.fontPx * 0.48) : st.position === 'bottom' ? m.bottomPx + Math.round(m.fontPx * 0.48) : 0;
+  const fadeMs = Math.round(st.fade * 1000);
   const ts = (t) => {
     const cs = Math.max(0, Math.round(t * 100));
     const hh = Math.floor(cs / 360000);
@@ -34,14 +74,14 @@ function buildAss(lyrics, { w, h, style = {} }) {
     const ss = Math.floor((cs % 6000) / 100);
     return `${hh}:${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}.${String(cs % 100).padStart(2, '0')}`;
   };
-  const esc = (s) => String(s).replace(/\\/g, '\\\\').replace(/\{/g, '(').replace(/\}/g, ')').replace(/\n/g, '\\N');
+  const esc = (x) => String(x).replace(/\\/g, '\\\\').replace(/\{/g, '(').replace(/\}/g, ')').replace(/\n/g, '\\N');
   return [
     '[Script Info]', 'ScriptType: v4.00+', `PlayResX: ${w}`, `PlayResY: ${h}`, 'WrapStyle: 0', '',
     '[V4+ Styles]',
     'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding',
-    `Style: Lyric,${font},${size},${primary},&H000000FF,&H00000000,&H80000000,1,0,0,0,100,100,0,0,${box},${Math.max(2, Math.round(size / 14))},1,2,${Math.round(w * 0.06)},${Math.round(w * 0.06)},${margin},1`,
+    `Style: Lyric,${font.name},${size},${primary},&H000000FF,${outlineCol},${back},${font.bold ? -1 : 0},0,0,0,100,100,0,0,${hasBox ? 3 : 1},${outline},${shadow},${align},${m.margin.left},${m.margin.right},${marginV},1`,
     '', '[Events]', 'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',
-    ...lyrics.map((l) => `Dialogue: 0,${ts(l.start)},${ts(l.end)},Lyric,,0,0,0,,{\\fad(120,120)}${esc(l.text)}`),
+    ...lyrics.filter((l) => l && !l.hidden && l.text).map((l) => `Dialogue: 0,${ts(l.start)},${ts(l.end)},Lyric,,0,0,0,,${fadeMs > 0 ? `{\\fad(${fadeMs},${fadeMs})}` : ''}${esc(l.text)}`),
     '',
   ].join('\n');
 }
@@ -76,6 +116,7 @@ function finishFilters(finish = {}) {
 async function assembleAnimation(p) {
   const { shots, transitions, song, totalFrames, w, h, out, signal, onProgress } = p;
   const finish = p.finish || {};
+  freeOutput(out, ...shots.map((x) => x.file)); // 완성본이 이 파일과 하드링크로 묶여 있어도 안전하게
   const total = totalFrames / FPS;
   const args = ['-y'];
   shots.forEach((s) => args.push('-i', s.file));
@@ -126,14 +167,29 @@ async function assembleAnimation(p) {
   return out;
 }
 
+/** 출력 파일을 쓰기 전에 지운다: 자막을 끈 에피소드는 완성본이 깨끗한 원본과 하드링크로 같은 파일이라, 그대로 덮어쓰면 원본이 망가진다 */
+function freeOutput(out, ...others) {
+  const o = path.resolve(out);
+  if (others.some((x) => x && path.resolve(x) === o)) return;
+  try { fs.unlinkSync(out); } catch (_) { /* 없으면 괜찮다 */ }
+}
+
 /**
  * 깨끗한 원본 위에 가사 자막을 입힌다 (영상만 다시 압축, 노래는 그대로 복사).
+ * 압축은 x264 veryfast + crf 18 (같은 화질에 fast 보다 약 2배 빠르다). 바꾸고 싶으면 opts.preset / opts.crf.
  * @param {{video:string, total:number, w:number, h:number, out:string,
- *          subtitlePngs?:{start:number,end:number,file:string,y:number}[], assFile?:string, signal?:AbortSignal, onProgress?:Function}} p
+ *          subtitlePngs?:{start:number,end:number,file:string,y:number,x?:number,fade?:number,hidden?:boolean}[],
+ *          assFile?:string, assFonts?:string[], signal?:AbortSignal, onProgress?:Function}} p
+ *   subtitlePngs 의 x 는 PNG 왼쪽 가장자리(없으면 가운데), y 는 위쪽 가장자리, fade 는 페이드 초(기본 0.15). hidden 인 것은 건너뛴다.
+ *   assFile 은 PNG 가 없을 때의 대체 경로(libass), assFonts 는 그때 쓸 글꼴 파일(없어도 된다).
+ * @param {{preset?:string, crf?:number}} [opts]
  */
-async function burnSubtitles(p) {
+async function burnSubtitles(p, opts = {}) {
   const { video, total, out, signal, onProgress } = p;
-  const subs = p.subtitlePngs || [];
+  const preset = opts.preset || p.preset || 'veryfast';
+  const crf = opts.crf ?? p.crf ?? 18;
+  const subs = (p.subtitlePngs || []).filter((s) => s && !s.hidden && s.file);
+  freeOutput(out, video);
   const args = ['-y', '-i', video];
   // 자막 그림은 자기가 보이는 동안만 읽는다 (빠름)
   subs.forEach((s) => args.push('-loop', '1', '-framerate', String(FPS), '-t', Math.max(0.05, s.end - s.start).toFixed(3), '-i', s.file));
@@ -141,26 +197,42 @@ async function burnSubtitles(p) {
   let cur = 'base';
   subs.forEach((s, k) => {
     const d = Math.max(0.05, s.end - s.start);
-    const fi = Math.min(0.15, d / 4);
-    f.push(`[${k + 1}:v]format=rgba,fade=t=in:st=0:d=${fi.toFixed(3)}:alpha=1,fade=t=out:st=${(d - fi).toFixed(3)}:d=${fi.toFixed(3)}:alpha=1,setpts=PTS-STARTPTS+${s.start.toFixed(3)}/TB[s${k}]`);
-    f.push(`[${cur}][s${k}]overlay=x=(W-w)/2:y=${Math.round(s.y)}:eof_action=pass[o${k}]`);
+    const fi = Math.min(Number.isFinite(s.fade) ? s.fade : 0.15, d / 4);
+    const fades = fi >= 0.01
+      ? `fade=t=in:st=0:d=${fi.toFixed(3)}:alpha=1,fade=t=out:st=${(d - fi).toFixed(3)}:d=${fi.toFixed(3)}:alpha=1,`
+      : '';
+    f.push(`[${k + 1}:v]format=rgba,${fades}setpts=PTS-STARTPTS+${s.start.toFixed(3)}/TB[s${k}]`);
+    const x = Number.isFinite(s.x) ? Math.round(s.x) : '(W-w)/2';
+    f.push(`[${cur}][s${k}]overlay=x=${x}:y=${Math.round(s.y)}:eof_action=pass[o${k}]`);
     cur = `o${k}`;
   });
+  let cwd;
   if (!subs.length && p.assFile) {
     // 필터 문자열 안의 윈도우 경로(C:)는 이스케이프가 까다로워서,
     // ffmpeg 를 자막 파일 폴더에서 실행하고 파일 이름만 넘긴다.
+    const assDir = path.dirname(p.assFile);
     const assName = path.basename(p.assFile).replace(/[^\w.-]/g, '_');
-    if (assName !== path.basename(p.assFile)) fs.copyFileSync(p.assFile, path.join(path.dirname(p.assFile), assName));
-    f.push(`[${cur}]ass=${assName}[subbed]`);
+    if (assName !== path.basename(p.assFile)) fs.copyFileSync(p.assFile, path.join(assDir, assName));
+    let filter = `ass=${assName}`;
+    const fonts = (p.assFonts || []).filter((x) => x && fs.existsSync(x));
+    if (fonts.length) {
+      // 번들 글꼴을 자막 폴더 안 fonts/ 로 복사해 두고 상대 경로로 알려 준다 (윈도우 경로 이스케이프 피하기)
+      const fd = path.join(assDir, 'fonts');
+      fs.mkdirSync(fd, { recursive: true });
+      for (const x of fonts) fs.copyFileSync(x, path.join(fd, path.basename(x)));
+      filter += ':fontsdir=fonts';
+    }
+    f.push(`[${cur}]${filter}[subbed]`);
     cur = 'subbed';
+    cwd = assDir;
   }
   f.push(`[${cur}]format=yuv420p[vout]`);
   args.push('-filter_complex', f.join(';'), '-map', '[vout]', '-map', '0:a?', '-c:a', 'copy',
-    '-c:v', 'libx264', '-preset', 'fast', '-crf', '18', '-r', String(FPS), '-pix_fmt', 'yuv420p', '-movflags', '+faststart',
+    '-c:v', 'libx264', '-preset', preset, '-crf', String(crf), '-r', String(FPS), '-pix_fmt', 'yuv420p', '-movflags', '+faststart',
     '-metadata', 'comment=Made with AI (AnimeMaker V2)', '-metadata', 'description=AI-generated content', out);
   await runFfmpeg(args, {
     signal,
-    cwd: !subs.length && p.assFile ? path.dirname(p.assFile) : undefined,
+    cwd,
     onProgress: onProgress ? (s) => onProgress(Math.min(1, s / total)) : undefined,
   });
   return out;
@@ -172,4 +244,4 @@ async function thumbnail(video, out, { signal } = {}) {
   return out;
 }
 
-module.exports = { outputSize, buildAss, makePaperTexture, finishFilters, assembleAnimation, burnSubtitles, thumbnail, FPS };
+module.exports = { outputSize, buildAss, assFont, makePaperTexture, finishFilters, assembleAnimation, burnSubtitles, thumbnail, FPS };

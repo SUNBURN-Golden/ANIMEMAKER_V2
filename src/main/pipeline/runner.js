@@ -19,11 +19,13 @@ const { waitForNewDownload, SITES, EXTS } = require('../ai/helper');
 const { NeedsUserError } = require('../ai/webbot/engine');
 const { analyzeSong } = require('../media/audio');
 const { estimateLyricTiming, scaledCutRange, segmentSong, toSrt, toLrc } = require('../media/timeline');
-const { outputSize, buildAss, assembleAnimation, burnSubtitles, makePaperTexture } = require('../media/assemble');
+const { outputSize, buildAss, assFont, assembleAnimation, burnSubtitles, makePaperTexture } = require('../media/assemble');
 const { renderShot } = require('../media/render');
 const { processCel, keyColorFor, writePng } = require('../media/keyer');
 const IB = require('../media/inbetween');
 const { parseLyrics, sectionSummary } = require('../media/lyrics');
+const SubStyle = require('../../shared/subtitle-style');
+const SubCore = require('./subs-core');
 const P = require('./prompts');
 const X = require('./xsheet');
 
@@ -56,6 +58,11 @@ function sleep(ms, signal) {
   });
 }
 function safeName(s) { return String(s || 'video').replace(/[\\/:*?"<>|\r\n\t]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 60) || 'video'; }
+/** 깨끗한 원본을 완성본 이름으로 하드링크 (안 되면 복사). 100MB 가 넘는 복사를 피한다 */
+function linkOrCopy(src, dst) {
+  try { fs.rmSync(dst, { force: true }); } catch (_) { /* noop */ }
+  try { fs.linkSync(src, dst); return 'link'; } catch (_) { fs.copyFileSync(src, dst); return 'copy'; }
+}
 function hardStop(e) { return e.name === 'AbortError' || e instanceof LimitError || ['limit', 'auth', 'notInstalled'].includes(e.kind); }
 
 class ProjectRunner extends EventEmitter {
@@ -427,6 +434,7 @@ class ProjectRunner extends EventEmitter {
       ...t, part: 1,
       section: (li.lines[i] && li.lines[i].section) || t.section || '',
       sectionStart: li.lines[i] ? !!li.lines[i].sectionStart : !!t.sectionStart,
+      ...((li.lines[i] && li.lines[i].hidden) || t.hidden ? { hidden: true } : {}),
     }));
     if (li.timed && li.timed.length) return { lyrics: withSection(li.timed), source: li.source };
     const est = estimateLyricTiming(li.lines.map((l) => ({ ...l, part: 1 })), this.p.music.partRanges, analysis, { trailingGaps: li.trailingGaps });
@@ -958,42 +966,55 @@ class ProjectRunner extends EventEmitter {
   async step_subtitles() {
     const out = this.p.output || {};
     if (!this.exists(out.clean)) throw new Error('깨끗한 원본 영상이 없습니다. [렌더링] 부터 다시 해 주세요.');
+    const startedMs = Date.now();
     const { w, h } = outputSize(this.wf.aspect, this.wf.quality);
     const t = this.p.timing;
     const xs = this.p.xsheet;
     const total = xs.totalFrames / X.FPS;
     const outDir = path.join(this.dir, 'output');
-    const subs = this.wf.subtitles || {};
-    const lyrics = (t.lyrics || []).filter((l) => l.start < total);
+    const style = SubStyle.normalizeStyle(this.wf.subtitles, { w, h }); // 옛 형식도 같은 모양으로 읽는다
+    // 숨긴 줄은 영상에도 SRT/LRC 에도 넣지 않는다
+    const shown = (t.lyrics || []).filter((l) => !l.hidden && l.text);
+    const lyrics = shown.filter((l) => l.start < total).map((l) => ({ ...l, end: Math.min(l.end, total) }));
     const s = this.series;
     const name = `${safeName(`${s ? `${s.name} EP${s.episode} ` : ''}${this.p.plan.title}`)}.mp4`;
     const finalPath = path.join(outDir, name);
-    if (subs.enabled !== false && lyrics.length) {
+    let burned = false;
+    if (style.enabled && lyrics.length) {
       let subtitlePngs = null;
       let assFile = null;
+      let assFonts = [];
       if (this.renderSubtitles) {
         try {
-          subtitlePngs = await this.renderSubtitles(lyrics, { w, h, style: subs, outDir: path.join(this.dir, 'work', 'subs') });
+          subtitlePngs = await this.renderSubtitles(lyrics, { w, h, style, outDir: path.join(this.dir, 'work', 'subs'), log: (m) => this.log(m) });
         } catch (e) {
           this.log(`⚠ 자막 이미지 생성 실패, 기본 자막으로 대체: ${e.message}`);
         }
       }
+      // 대체 경로(libass)를 쓰면 화면에 알린다 (p.subsFallback) — 모양이 미리 본 것과 조금 다를 수 있다
+      this.p.subsFallback = !subtitlePngs;
       if (!subtitlePngs) {
         assFile = path.join(this.dir, 'work', 'lyrics.ass');
         fs.mkdirSync(path.dirname(assFile), { recursive: true });
-        fs.writeFileSync(assFile, buildAss(lyrics, { w, h, style: subs }));
+        fs.writeFileSync(assFile, buildAss(lyrics, { w, h, style }));
+        const fontsDir = path.join(__dirname, '..', '..', 'renderer', 'assets', 'fonts');
+        assFonts = assFont(style.font).files.map((f) => path.join(fontsDir, f));
+        this.log('⚠ 자막을 기본 방식으로 입혀요. 글꼴과 모양이 미리 본 것과 조금 다를 수 있어요.');
       }
       this.setStep('subtitles', { message: '가사 자막을 입히는 중…' });
       await burnSubtitles({
-        video: this.abs(out.clean), total, w, h, out: finalPath, subtitlePngs, assFile, signal: this.abort.signal,
+        video: this.abs(out.clean), total, w, h, out: finalPath, subtitlePngs, assFile, assFonts, signal: this.abort.signal,
         onProgress: (f) => this.setStep('subtitles', { message: `가사 자막 입히는 중 ${Math.round(f * 100)}%`, progress: { done: Math.round(f * 100), total: 100 } }),
       });
+      burned = true;
     } else {
-      fs.copyFileSync(this.abs(out.clean), finalPath);
-      this.log('ℹ 자막이 꺼져 있거나 가사가 없어서 깨끗한 원본을 그대로 완성본으로 씁니다.');
+      // 자막이 없는 완성본: 100MB 가 넘는 파일을 복사하지 않고 같은 파일에 이름만 하나 더 붙인다 (안 되면 복사)
+      this.p.subsFallback = false;
+      const how = linkOrCopy(this.abs(out.clean), finalPath);
+      this.log(`ℹ 자막이 꺼져 있거나 보여 줄 가사가 없어서 깨끗한 원본을 그대로 완성본으로 써요${how === 'link' ? '' : ' (복사)'}.`);
     }
-    fs.writeFileSync(path.join(outDir, 'lyrics.srt'), toSrt(t.lyrics));
-    fs.writeFileSync(path.join(outDir, 'lyrics.lrc'), toLrc(t.lyrics, this.p.plan.title));
+    fs.writeFileSync(path.join(outDir, 'lyrics.srt'), toSrt(shown));
+    fs.writeFileSync(path.join(outDir, 'lyrics.lrc'), toLrc(shown, this.p.plan.title));
     this.writeStoryboard();
     if (out.video && out.video !== this.rel(finalPath)) this.removeOld(out.video, finalPath);
     this.p.output = {
@@ -1001,6 +1022,8 @@ class ProjectRunner extends EventEmitter {
       storyboard: 'output/storyboard.md', timesheet: 'output/timesheet.json', madeAt: Date.now(),
     };
     this.p.subsStale = false;
+    // 다음에 '지난번 1분 38초' 처럼 보여 줄 걸리는 시간 (자막을 실제로 입혔을 때만)
+    if (burned) this.p.steps.subtitles = { ...this.p.steps.subtitles, lastMs: Date.now() - startedMs };
     if (s) {
       // 시리즈 기록에 이번 에피소드 요약을 남긴다 (다음 에피소드 기획에 쓰인다)
       try {
@@ -1117,40 +1140,102 @@ class ProjectRunner extends EventEmitter {
   /** 컷이 이미 정해졌는지 (그 뒤의 가사 수정은 자막만 다시 입힌다) */
   get cutsFixed() { return !!(this.p.steps.timing && this.p.steps.timing.status === 'done' && this.p.timing && this.p.timing.segments); }
 
-  /** 가사 글 바꾸기 (붙여넣기 또는 .txt/.lrc/.srt 파일) */
-  updateLyricsText(raw, filename) {
-    if (this.running && !(this.p.waiting && this.p.waiting.key === 'review:lyrics')) throw new Error('진행 중에는 바꿀 수 없습니다.');
+  /**
+   * 가사 글 바꾸기 (붙여넣기 또는 .txt/.lrc/.srt 파일).
+   *  - 줄 수가 같으면 맞춰 둔 시간은 그대로 두고 글자만 바꾼다.
+   *  - 줄 수가 달라져도 직접 맞춘(탭) 시간은 지킨다: 글이 같은(또는 조금 고친) 줄은 시간을 그대로 쓰고,
+   *    새 줄은 이웃 줄 사이로 나눠서 가장 가까운 박자에 맞춘다. 하나라도 같은 줄이 있으면 '직접 맞춤' 이 유지된다.
+   *  - 시간이 들어 있는 .lrc/.srt 이거나 맞춘 시간이 없으면 예전처럼 새로 계산한다.
+   * 7단계(자막 입히기)가 돌고 있을 때는 막힌다. 그림 그리는 중에도(컷이 정해진 뒤) 고칠 수 있다.
+   * @param {string} raw @param {string} [filename]
+   * @param {{dryRun?:boolean}} [opts] dryRun: 적용하지 않고 사라질 줄 수만 알려 준다
+   * @returns {{lost:number, kept:number, added:number, mode:'same'|'merge'|'recompute'|'timed'|'none'}} lost = 사라지는 '맞춘 시간' 줄 수
+   */
+  updateLyricsText(raw, filename, opts = {}) {
+    const st7 = this.p.steps && this.p.steps.subtitles;
+    if (this.running && st7 && st7.status === 'running') throw new Error('지금 자막을 영상에 입히는 중이에요. 끝난 뒤에 고쳐 주세요.');
+    if (this.running && !(this.p.waiting && this.p.waiting.key === 'review:lyrics') && !this.cutsFixed) throw new Error('진행 중에는 바꿀 수 없습니다.');
     const prev = (this.p.timing && this.p.timing.lyrics) || [];
-    this.p.lyricsInput = parseLyrics(raw, filename);
-    if (this.p.music && this.p.music.analysis) {
-      const li = this.p.lyricsInput;
-      if (this.cutsFixed && !li.timed && prev.length && li.lines.length === prev.length) {
-        // 줄 수가 같으면 맞춰 둔 시간은 그대로 두고 글자만 바꾼다
-        this.p.timing.lyrics = prev.map((l, i) => ({ ...l, text: li.lines[i].text, section: li.lines[i].section || l.section }));
+    const prevSource = this.p.timing && this.p.timing.lyricsSource;
+    const li = parseLyrics(raw, filename);
+    const hasAnalysis = !!(this.p.music && this.p.music.analysis);
+    let next = null; // { lyrics, source }
+    let info = { lost: 0, kept: 0, added: 0, mode: 'none' };
+    if (hasAnalysis) {
+      if (!li.timed && prev.length && li.lines.length === prev.length && (this.cutsFixed || prevSource === 'tap')) {
+        // 줄 수가 같으면 맞춰 둔 시간은 그대로 두고 글자만 바꾼다 (글이 바뀐 줄만 숨김 여부를 새로 읽는다)
+        const lyrics = prev.map((l, i) => {
+          const nl = li.lines[i];
+          const same = SubCore.normText(l.text) === SubCore.normText(nl.text);
+          const o = { ...l, text: nl.text, section: nl.section || l.section };
+          if (!same) { delete o.words; if (nl.hidden) o.hidden = true; else delete o.hidden; }
+          return o;
+        });
+        next = { lyrics, source: prevSource };
+        info = { lost: 0, kept: prev.length, added: 0, mode: 'same' };
+      } else if (!li.timed && prev.length && prevSource === 'tap') {
+        const m = SubCore.mergeLyricLines(prev, li.lines, { beats: this.p.music.analysis.beats, duration: this.p.music.analysis.duration });
+        if (m.matched > 0) {
+          next = { lyrics: m.lyrics, source: 'tap' };
+          info = { lost: m.lost, kept: m.matched, added: m.added, mode: 'merge' };
+        }
+      }
+      // 새로 계산하면 직접 맞춘 시간은 모두 사라진다
+      if (!next) info = { lost: prevSource === 'tap' ? prev.length : 0, kept: 0, added: 0, mode: li.timed ? 'timed' : 'recompute' };
+    }
+    if (opts && opts.dryRun) return info;
+    this.p.lyricsInput = li;
+    if (hasAnalysis) {
+      if (next) {
+        this.p.timing = { ...(this.p.timing || {}), lyrics: next.lyrics, lyricsSource: next.source };
       } else {
         // 바뀐 가사로 자막 줄을 바로 다시 계산 (가사 맞추기 대기 중이면 그 화면에 바로 반영)
         const c = this.computeLyrics();
         this.p.timing = { ...(this.p.timing || {}), lyrics: c.lyrics, lyricsSource: c.source };
       }
+      SubCore.relinkSegments(this.p.timing.segments, this.p.timing.lyrics);
     }
     if (!this.running) {
       if (this.cutsFixed) { if (this.p.steps.subtitles) this.p.steps.subtitles.status = 'pending'; } else if (this.p.steps.timing) this.p.steps.timing.status = 'pending';
-    }
+    } else if (this.cutsFixed && this.p.steps.subtitles) this.p.steps.subtitles.status = 'pending';
     this.p.subsStale = true;
     this.writeStoryboard();
     this.save();
+    return info;
   }
 
-  /** 탭으로 맞춘 가사 타이밍 저장 (구간 정보는 같은 순서의 기존 줄에서 가져온다) */
+  /**
+   * 탭으로 맞춘 가사 타이밍 저장 (구간 정보는 같은 순서의 기존 줄에서 가져온다).
+   * 숨긴 줄(hidden) · 끝을 직접 정한 줄(endLocked) · 단어 시간(words)은 글이 같은 기존 줄에서 이어받는다.
+   */
   updateLyrics(lyrics) {
     if (!this.p.timing) throw new Error('타이밍 단계가 아직 없습니다.');
     const prev = this.p.timing.lyrics || [];
-    this.p.timing.lyrics = lyrics.map((l, i) => ({
-      text: String(l.text), part: l.part || 1, start: Number(l.start), end: Number(l.end),
-      section: (prev[i] && prev[i].text === l.text ? prev[i].section : l.section) || '',
-      sectionStart: !!(prev[i] && prev[i].text === l.text ? prev[i].sectionStart : l.sectionStart),
-    })).filter((l) => l.text && l.end > l.start).sort((a, b) => a.start - b.start);
+    const pairs = SubCore.matchLines(prev.map((l) => l.text), lyrics.map((l) => String(l.text)));
+    const from = new Map(pairs.map((pr) => [pr.n, { old: prev[pr.o], exact: pr.exact }]));
+    const matchedOld = new Set(pairs.map((pr) => pr.o));
+    // 숨긴 줄은 탭 화면에 안 보여 줄 수도 있다 → 받은 목록에 없으면 원래 시간 그대로 다시 넣는다 (줄이 사라지지 않게)
+    const keptHidden = prev.filter((l, i) => l.hidden && !matchedOld.has(i));
+    this.p.timing.lyrics = [...lyrics.map((l, i) => {
+      const m = from.get(i);
+      const old = m ? m.old : null;
+      const same = !!(prev[i] && prev[i].text === l.text);
+      const line = {
+        text: String(l.text), part: l.part || 1, start: Number(l.start), end: Number(l.end),
+        section: (same ? prev[i].section : l.section) || '',
+        sectionStart: !!(same ? prev[i].sectionStart : l.sectionStart),
+      };
+      if (typeof l.hidden === 'boolean') line.hidden = l.hidden;
+      else if (old && old.hidden !== undefined && m.exact) line.hidden = old.hidden;
+      if (old && m.exact && old.words) line.words = old.words;
+      // 끝을 직접 정한 줄(endLocked)은 그 끝을 지킨다: 새로 받은 줄이 잠갔으면 그 끝 그대로,
+      // 기존 줄이 잠가 둔 것이면 시작이 조금 바뀌어도 기존 끝을 이어받는다 (시작보다 뒤일 때만)
+      if (l.endLocked === true) line.endLocked = true;
+      else if (old && old.endLocked && old.end > line.start + 0.1) { line.end = old.end; line.endLocked = true; }
+      return line;
+    }), ...keptHidden.map((l) => ({ ...l }))].filter((l) => l.text && l.end > l.start).sort((a, b) => a.start - b.start);
     this.p.timing.lyricsSource = 'tap';
+    SubCore.relinkSegments(this.p.timing.segments, this.p.timing.lyrics);
     this.p.subsStale = true;
     if (!this.running && this.cutsFixed && this.p.steps.subtitles) this.p.steps.subtitles.status = 'pending';
     this.save();

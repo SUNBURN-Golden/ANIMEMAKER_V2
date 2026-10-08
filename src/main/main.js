@@ -318,7 +318,8 @@ function registerIpc() {
   h('proj:updateLyrics', (id, lyrics) => { getRunner(id).updateLyrics(lyrics); return true; });
   h('proj:setBpm', (id, bpm) => getRunner(id).setBpm(bpm));
   h('proj:replaceSong', (id, file) => { getRunner(id).replaceSong(file); return true; });
-  h('proj:updateLyricsText', (id, raw, filename) => { getRunner(id).updateLyricsText(raw, filename); return true; });
+  // 줄 수가 달라져도 맞춘 시간을 지킨다 → { lost, kept, added, mode } 를 돌려준다 (opts.dryRun 이면 적용하지 않고 알려만 준다)
+  h('proj:updateLyricsText', (id, raw, filename, opts) => getRunner(id).updateLyricsText(raw, filename, opts || {}));
   h('proj:readLog', (id) => {
     const f = path.join(store.projectDir(id), 'log.txt');
     try {

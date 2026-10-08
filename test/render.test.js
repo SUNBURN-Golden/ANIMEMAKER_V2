@@ -154,3 +154,118 @@ test('layered render: BG plate + transparent cels (+ in-between ids), exact leng
   assert.ok(celMove > 40, `camera pans (cel moved ${celMove.toFixed(1)}px)`);
   assert.ok(Math.abs(bgMove / celMove - 0.8) < 0.06, `parallax ${(bgMove / celMove).toFixed(3)} (bg ${bgMove.toFixed(1)} / cel ${celMove.toFixed(1)})`);
 });
+
+// ---------- 자막: ASS 대체 경로 · 영상에 입히기 ----------
+
+test('buildAss: PNG 자막과 같은 정규화 스타일을 읽는다 (색 · 테두리 · 상자 · 위치 · 안전영역 · 글꼴 · 숨긴 줄)', () => {
+  const S = require('../src/shared/subtitle-style');
+  const A = require('../src/main/media/assemble');
+  const styleLine = (ass) => ass.split('\n').find((l) => l.startsWith('Style: Lyric,')).slice('Style: Lyric,'.length).split(',');
+  // [Fontname, Fontsize, Primary, Secondary, Outline, Back, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, OutlineW, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding]
+  const lines = [{ text: '첫 줄', start: 0.5, end: 2.5 }, { text: '숨긴 줄', start: 3, end: 4, hidden: true }, { text: '둘째\n줄 {태그}', start: 4, end: 6 }];
+  const basic = A.buildAss(lines, { w: 1280, h: 720 });
+  const b = styleLine(basic);
+  assert.strictEqual(b[0], 'Pretendard', '번들 글꼴');
+  assert.strictEqual(Number(b[1]), Math.round(33 * S.FONT_BY_ID.pretendard.ass.k), 'libass 크기 보정 (줄 높이 기준)');
+  assert.strictEqual(b[2], '&H00FFFFFF');
+  assert.strictEqual(b[4], '&H19000000', '검은 테두리 90%');
+  assert.strictEqual(b[14], '1', 'BorderStyle 1 (테두리 + 그림자)');
+  assert.strictEqual(Number(b[15]), 3, '테두리 5.28px 의 절반 ≈ 3');
+  assert.strictEqual(b[17], '2', '아래 가운데');
+  assert.deepStrictEqual(b.slice(18, 21).map(Number), [51, 51, 58 + Math.round(33 * 0.48)], '좌우 4% · 아래 8%');
+  assert.strictEqual(b[6], '-1', 'Pretendard Bold');
+  assert.match(basic, /PlayResX: 1280\nPlayResY: 720/);
+  assert.match(basic, /\{\\fad\(150,150\)\}첫 줄/);
+  assert.doesNotMatch(basic, /숨긴 줄/, '숨긴 줄은 ASS 에도 없다');
+  assert.match(basic, /둘째\\N줄 \(태그\)/, '억지 줄바꿈은 \\N, 중괄호는 괄호로');
+  // 노랑 예능체: 노랑 · 굵은 테두리 · Do Hyeon(굵지 않은 파일이라 Bold 0)
+  const y = styleLine(A.buildAss(lines, { w: 1280, h: 720, style: { preset: 'yellow' } }));
+  assert.strictEqual(y[0], 'Do Hyeon');
+  assert.strictEqual(y[2], '&H004DE1FF', '#ffe14d (BGR 순서)');
+  assert.strictEqual(y[6], '0');
+  assert.ok(Number(y[15]) > Number(b[15]), '굵은 테두리');
+  // 상자: BorderStyle 3, 상자 색은 OutlineColour 에 검정 55%
+  const box = styleLine(A.buildAss(lines, { w: 1280, h: 720, style: { preset: 'box' } }));
+  assert.strictEqual(box[14], '3');
+  assert.strictEqual(box[4], '&H73000000');
+  // 위치: 위 · 가운데
+  assert.strictEqual(styleLine(A.buildAss(lines, { w: 1280, h: 720, style: { position: 'top' } }))[17], '8');
+  assert.strictEqual(styleLine(A.buildAss(lines, { w: 1280, h: 720, style: { position: 'middle' } }))[17], '5');
+  // 세로 영상 안전영역: 오른쪽 12% · 아래 24%
+  const tall = styleLine(A.buildAss(lines, { w: 720, h: 1280, style: { preset: 'shorts' } }));
+  assert.deepStrictEqual(tall.slice(18, 20).map(Number), [29, 86], '왼쪽 4% · 오른쪽 12%');
+  assert.ok(Number(tall[20]) >= 307, `아래 24% 이상: ${tall[20]}`);
+  assert.strictEqual(tall[0], 'Black Han Sans');
+  // 옛 형식(예전 워크플로우)도 읽는다: 글꼴 = 내 컴퓨터 기본, 예전 글자 크기 · 여백
+  const legacy = styleLine(A.buildAss(lines, { w: 1280, h: 720, style: { enabled: true, sizePct: 4.6, color: 'yellow', box: true, marginPct: 8 } }));
+  assert.strictEqual(legacy[0], A.assFont('system').name);
+  assert.strictEqual(legacy[14], '3');
+  assert.strictEqual(legacy[2], '&H004DE1FF');
+  // 페이드 0 이면 \fad 를 안 붙인다
+  assert.doesNotMatch(A.buildAss(lines, { w: 1280, h: 720, style: { fade: 0 } }), /\\fad/);
+  // 번들 글꼴 파일 이름: 고른 글꼴 + 없는 글자를 채울 Pretendard
+  assert.deepStrictEqual(A.assFont('jua').files, ['Jua-Regular.ttf', 'Pretendard-Bold.otf']);
+  assert.deepStrictEqual(A.assFont('pretendard').files, ['Pretendard-Bold.otf']);
+  assert.deepStrictEqual(A.assFont('system').files, []);
+});
+
+test('burnSubtitles: x264 veryfast(crf 18) 가 기본이고 옵션으로 바꿀 수 있다 · 줄마다 x/y · 숨긴 줄은 건너뜀 · 하드링크로 묶인 출력은 끊고 쓴다', { timeout: 200000 }, async () => {
+  const K = require('../src/main/media/keyer');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'am2-burn-'));
+  const W = 320;
+  const H = 180;
+  const bg = path.join(dir, 'bg.mp4');
+  const { runFfmpeg } = require('../src/main/media/ffmpeg');
+  await runFfmpeg(['-y', '-f', 'lavfi', '-i', `color=c=0x303030:s=${W}x${H}:d=2:r=24`, '-f', 'lavfi', '-i', 'sine=frequency=330:duration=2', '-shortest', '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', bg]);
+  const white = path.join(dir, 'white.png');
+  const px = new Uint8ClampedArray(40 * 20 * 4);
+  for (let i = 0; i < 40 * 20; i++) px.set([255, 255, 255, 255], i * 4);
+  await K.writePng(white, px, 40, 20);
+  const x264 = (file) => {
+    const txt = fs.readFileSync(file).toString('latin1');
+    const m = /options: ([^\0]*?)\0/.exec(txt.slice(txt.indexOf('x264 - core')));
+    return m ? m[1] : '';
+  };
+  const subs = [
+    { file: white, start: 0.2, end: 1.8, x: 20, y: 30, fade: 0 },
+    { file: white, start: 0.2, end: 1.8, x: 200, y: 30, hidden: true }, // 숨긴 줄: 입히지 않는다
+    { file: white, start: 0.2, end: 1.8, y: 120 }, // x 가 없으면 가운데
+  ];
+  const out = path.join(dir, 'out.mp4');
+  await burnSubtitles({ video: bg, total: 2, w: W, h: H, out, subtitlePngs: subs });
+  const opt = x264(out);
+  assert.match(opt, /subme=2/, 'veryfast');
+  assert.match(opt, /rc_lookahead=10/);
+  assert.match(opt, /crf=18\.0/);
+  assert.ok(Math.abs((await countFrames(out)) - 48) <= 1, '길이 그대로');
+  const info = await probe(out);
+  assert.ok(info.hasAudio && info.hasVideo, '노래는 그대로 복사');
+  // 그 순간(1초) 프레임에서 자막이 놓인 자리를 본다
+  const shot = path.join(dir, 'f.png');
+  await runFfmpeg(['-y', '-ss', '1', '-i', out, '-frames:v', '1', shot]);
+  const img = await K.readRgba(shot);
+  const lum = (x, y) => img.data[(y * img.width + x) * 4];
+  assert.ok(lum(40, 40) > 200, '보이는 줄: x=20 에서 시작');
+  assert.ok(lum(10, 40) < 80, 'x=20 왼쪽은 비어 있다');
+  assert.ok(lum(220, 40) < 80, '숨긴 줄(x=200)은 입히지 않았다');
+  assert.ok(lum(Math.round((W - 40) / 2) + 20, 130) > 200, 'x 가 없으면 가운데');
+  // 옵션으로 압축 빠르기 바꾸기
+  const out2 = path.join(dir, 'out-fast.mp4');
+  await burnSubtitles({ video: bg, total: 2, w: W, h: H, out: out2, subtitlePngs: subs }, { preset: 'fast', crf: 23 });
+  assert.match(x264(out2), /subme=6/);
+  assert.match(x264(out2), /crf=23\.0/);
+  // 완성본이 깨끗한 원본과 하드링크로 같은 파일이어도(자막을 껐던 에피소드) 원본이 망가지지 않는다
+  const master = path.join(dir, 'master.mp4');
+  fs.copyFileSync(bg, master);
+  const linked = path.join(dir, 'final.mp4');
+  fs.linkSync(master, linked);
+  const before = fs.readFileSync(master);
+  await burnSubtitles({ video: master, total: 2, w: W, h: H, out: linked, subtitlePngs: subs });
+  assert.ok(fs.statSync(linked).ino !== fs.statSync(master).ino, '끊고 새 파일로');
+  assert.ok(Buffer.compare(fs.readFileSync(master), before) === 0, '깨끗한 원본은 그대로');
+  assert.ok(Math.abs((await countFrames(linked)) - 48) <= 1);
+  // 자막이 하나도 없어도(전부 숨김) 입히기는 끝까지 간다
+  const none = path.join(dir, 'none.mp4');
+  await burnSubtitles({ video: bg, total: 2, w: W, h: H, out: none, subtitlePngs: [{ ...subs[0], hidden: true }] });
+  assert.ok(Math.abs((await countFrames(none)) - 48) <= 1);
+});

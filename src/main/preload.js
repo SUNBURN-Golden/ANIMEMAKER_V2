@@ -76,7 +76,7 @@ contextBridge.exposeInMainWorld('api', {
   updateLyrics: (id, lyrics) => call('proj:updateLyrics', id, lyrics),
   setBpm: (id, bpm) => call('proj:setBpm', id, bpm),
   replaceSong: (id, file) => call('proj:replaceSong', id, file),
-  updateLyricsText: (id, raw, filename) => call('proj:updateLyricsText', id, raw, filename),
+  updateLyricsText: (id, raw, filename, opts) => call('proj:updateLyricsText', id, raw, filename, opts),
   readLog: (id) => call('proj:readLog', id),
   setProviders: (id, providers, sites) => call('proj:setProviders', id, providers, sites),
 
