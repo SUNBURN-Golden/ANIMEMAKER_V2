@@ -1,6 +1,6 @@
 'use strict';
 // 오케스트레이터 LLM 에게 보내는 지시문과, 그림 AI 에게 보내는 그림 프롬프트를 조립하는 함수들.
-const { lockedText, characterBlock, paletteText } = require('../characters');
+const { lockedText, characterBlock, paletteText } = require('../characters-core'); // 순수 코어 (fs·ffmpeg 없음): 폰 앱에서도 이 파일을 묶을 수 있다
 const { TRANSITIONS } = require('../media/timeline');
 
 const TRANSITION_TYPES = Object.keys(TRANSITIONS);

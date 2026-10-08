@@ -120,6 +120,49 @@
 - **BPM 이 두 배/절반으로 잡힘**: [노래·가사·컷] 탭에서 BPM 을 고치고 다시 분석.
 - 이어서 하기, 중지, 구독 한도 대기, 앱이 꺼진 뒤 이어서 하기는 V1 과 같아요.
 
+## 안드로이드 앱 (폰에서 만들기)
+
+컴퓨터 없이 폰 하나로 같은 흐름을 따라 하는 앱이에요 (`mobile/` 폴더, Capacitor + 웹 화면). 앱 이름은 **AnimeMaker V2**, 앱 번호는 `com.animemaker.v2` 라서
+V1 안드로이드 앱(`com.animemaker.mobile`)과 따로 설치돼요 — 아이콘(하늘색 → 보라, "V2" 딱지)과 저장 공간도 서로 달라요.
+안드로이드 7 이상, 영상은 폰 안에서 만들어요. Android System WebView(또는 Chrome)가 최신일수록 좋고, 앱 시작 화면의 **📱 내 폰 점검** 카드가 이 폰이 영상을 만들 수 있는지(영상·소리 부품, 메모리, 저장 공간)를 알려 주고 고치는 방법도 말해 줘요.
+
+🔒 폰 앱도 **구독 전용**이에요. 유료 API 를 부르지 않고, 폰에 깔린 ChatGPT · Gemini · Grok · Claude 앱으로 글·그림을 주고받기만 해요.
+
+🚧 **지금은 뼈대 단계예요.** 앱 틀(시작 화면 · 설정 · 내 폰 점검 · 공유로 받은 함 · 뒤로가기 안전장치 · 서명 · 자동 빌드)이 준비됐고, 영상을 만드는 화면은 이어서 채워 넣는 중이에요.
+
+**설치**
+1. GitHub 저장소의 **Actions → 가장 최근 실행 → Artifacts → `AnimeMaker-V2-Android`** 를 내려받아 압축을 풀면 `AnimeMaker-V2-<버전>-android.apk` 가 나와요. (태그 `v2.0.0` 처럼 릴리스를 만들면 **Releases** 에도 올라가요.)
+2. APK 를 폰에서 열고, "출처를 알 수 없는 앱 설치 허용" 을 한 번 켠 뒤 설치해요.
+3. **업데이트**는 새 APK 를 그냥 위에 설치하면 돼요. 모든 APK 를 같은 서명 키(`mobile/android/keystore/animemaker-v2.keystore`)로 서명하기 때문이에요.
+   ⚠ **이 키 파일을 지우거나 새로 만들면 위에 덮어 설치가 안 돼요.** 앱을 지우고 다시 깔아야 하는데, 그러면 **앱 안에 저장된 작품·캐릭터가 모두 사라져요.** 자세한 내용과 비밀번호·인증서 지문은 [`mobile/android/README-signing.md`](mobile/android/README-signing.md) 에 있어요. (개인 설치용 키라서 저장소에 넣어 두었어요. 여러 사람에게 나눠 줄 때는 비밀 키로 바꾸세요.)
+
+**데이터**: 작품·캐릭터·그림은 이 앱 안(앱 저장소)에만 있어요. 앱을 지우거나 폰 저장 공간이 모자라면 사라질 수 있으니 **완성한 영상은 갤러리(동영상 › AnimeMaker V2)에 저장**해 두세요. 자동 백업은 일부만 복원되는 사고를 막으려고 꺼 두었어요.
+
+**버전 번호**: 앱 버전(`versionName`)은 `mobile/package.json` 의 `version` 하나에서 읽고, 업데이트 설치용 `versionCode` 는 CI 실행 번호가 들어가요. 로컬에서 빌드하면 `versionCode` 가 `1` 이라서, CI 가 만든 APK 위에는 `adb install -r -d` 로만 덮어 설치할 수 있어요.
+
+**직접 빌드** (JDK 21, Android SDK 36, Node 22):
+```bash
+cd mobile
+npm ci
+npm test       # 계산 단위 시험 + 공용 코드 번들 가드 + Chromium(412×915)으로 화면 확인 (CHROME_PATH 로 브라우저 지정 가능)
+npm run apk    # 배포용 묶음(www/) → cap sync → ./gradlew assembleRelease → android/app/build/outputs/apk/release/app-release.apk (서명됨)
+```
+개발용 묶음(`npm run build:dev` → `www-dev/`)은 시험 전용이라서, 시험 직후 `cap sync` 를 해도 개발용 묶음이 앱에 들어가지 않아요. 공용 코드는 데스크톱과 **같은 파일**(`scripts/shared-modules.js` 목록)을 esbuild 로 묶어서 써요.
+CI 의 `android-apk` 작업이 같은 일을 하고, APK 의 앱 번호·이름·서명 지문까지 확인한 뒤 올려요 (실제 폰에서 돌려 본 것은 아직 아니에요).
+
+```
+mobile/
+  src/main.js           시작 화면 · 설정 · 작품 자리, 뒤로가기(일하는 중이면 "그만둘까요, 계속 할까요?"), 오류 알림
+  src/ui.js, jobs.js    화면 부품(아래 창 · 그만둘 수 있는 기다림 덮개) · 오래 걸리는 일 지킴이(runJob)
+  src/native.js         안드로이드 기능(AI 앱으로 보내기 · 공유 받은 함 · 알림줄 서비스 · 갤러리 저장). 플러그인 AnimeMakerV2Native
+  src/db.js, inbox.js   폰 저장소(IndexedDB animemaker-v2) · 공유로 받은 것 옮기기
+  src/probe.js, probe-card.js   내 폰 점검
+  src/audio.js, analyze.worker.js, key.worker.js, tap.js, transitions.js, fonts.js
+  android/              Gradle 프로젝트 (패키지 com.animemaker.v2, Java 플러그인 · 알림줄 서비스 · 받은 함)
+  tools/make-icons.py   런처 아이콘·시작 화면 만들기 (데스크톱 아이콘 build/icon.png 에서)
+  test/                 단위 시험 · 번들 가드 · Chromium 확인
+```
+
 ## 결과물 위치
 
 `문서\AnimeMaker V2\<날짜 이름>\`

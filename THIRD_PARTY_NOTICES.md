@@ -24,3 +24,21 @@ RIFE 는 소스 저장소에 들어 있지 않고, 설치 파일을 만들 때 `
 
 이 앱이 실행하는 **Codex CLI, Grok Build CLI, Antigravity CLI, Claude Code** 는 앱에 포함되지 않으며, 사용자가 각 회사의 안내에 따라 직접 설치합니다.
 각 CLI 와 AI 서비스의 이용약관은 해당 회사의 정책을 따릅니다.
+
+## 안드로이드 앱 (APK, `mobile/`)
+
+AnimeMaker V2 안드로이드 앱(`AnimeMaker-V2-<버전>-android.apk`)에는 아래 구성요소가 들어갑니다. 위 표의 **가사 자막 글꼴 5개**도 같은 파일(수정 없음)로 APK 안 `assets/fonts/` 에 함께 들어가고, 각 글꼴의 라이선스 원문(`OFL-*.txt`)도 같은 폴더에 있습니다.
+
+| 구성요소 | 용도 | 라이선스 |
+|---|---|---|
+| [Capacitor](https://capacitorjs.com/) (`@capacitor/core` · `android` · `app` · `clipboard` · `filesystem`) | 웹 화면을 안드로이드 앱으로 감싸는 틀, 앱 신호(뒤로가기 · 앱으로 돌아옴) · 클립보드 · 캐시 파일 쓰기 | MIT — Copyright (c) 2017-present Drifty Co. |
+| [Mediabunny](https://mediabunny.dev/) | 영상(MP4) 묶기 · 읽기 (WebCodecs 인코더와 함께 쓰는 폰 안 영상 만들기) | MPL-2.0 — 수정하지 않은 npm 배포본을 그대로 묶어 씀. 소스는 https://github.com/Vanilagy/mediabunny |
+| [AndroidX](https://developer.android.com/jetpack/androidx) (appcompat · core · coordinatorlayout · core-splashscreen · webkit 등) | 안드로이드 화면·알림·공유·시작 화면 부품 (Capacitor 가 함께 가져옴) | Apache-2.0 — Copyright The Android Open Source Project |
+| [esbuild](https://esbuild.github.io/) (개발용, APK 에는 들어가지 않음) | 웹 화면 코드를 한 파일로 묶기 (`mobile/build.mjs`) | MIT — Copyright (c) 2020 Evan Wallace |
+| [playwright-core](https://github.com/microsoft/playwright) (개발용, APK 에는 들어가지 않음) | 폰 화면을 Chromium 으로 열어 확인하는 시험 (`mobile/test/e2e.test.js`) | Apache-2.0 |
+| [fake-indexeddb](https://github.com/dumbmatter/fakeIndexedDB) (개발용, APK 에는 들어가지 않음) | 폰 저장소(IndexedDB) 규칙을 Node 에서 시험 | Apache-2.0 |
+| [Capacitor CLI](https://capacitorjs.com/docs/cli) (개발용, APK 에는 들어가지 않음) | 웹 화면을 안드로이드 프로젝트에 넣기 (`cap sync`) | MIT |
+
+폰 앱은 데스크톱 앱과 **같은 파일**(`scripts/shared-modules.js` 의 공용 계산 코드: 타임시트 · 가사 · 박자 분석 · 자막 · 카메라 …)을 묶어 쓰고, FFmpeg·RIFE 같은 데스크톱 전용 프로그램은 APK 에 들어가지 않습니다.
+런처 아이콘·시작 화면은 이 앱의 자체 그림(`build/icon.png` 에서 `mobile/tools/make-icons.py` 로 만듦)입니다.
+APK 는 `mobile/android/keystore/` 의 이 앱 전용 개인 설치용 키로 서명합니다 (`mobile/android/README-signing.md`).

@@ -11,13 +11,11 @@
 //  - 배경과 인물을 따로: 컷마다 배경 그림(BG) 한 장 + 인물 셀(투명) 여러 장
 //  - PC 가 반드시 지키는 것: 컷의 프레임 합계 = 컷 길이(프레임), 그림 장수 예산, 망가진 JSON 고치기
 const { resolveTransitions, TRANSITIONS } = require('../media/timeline');
+// 카메라 움직임 표 · 정리 · 계산은 공용 모듈로 옮겼다 (화면 미리보기도 같은 코드를 쓴다). 여기서 가져와 그대로 다시 내보낸다.
+const { CAMERA_MOVES, CAMERA_PRESETS, ZOOM_MAX, normalizeCamera, cameraAt, easeP } = require('../../shared/camera');
 
 const FPS = 24;
-const CAMERA_MOVES = ['hold', 'pan_left', 'pan_right', 'pan_up', 'pan_down', 'zoom_in', 'zoom_out', 'truck_in', 'truck_out', 'shake'];
 const FX_TYPES = ['fade_in', 'fade_out', 'flash', 'sparkle', 'shake', 'dissolve_in'];
-const EASES = ['linear', 'in', 'out', 'inout'];
-const ZOOM_MIN = 1;
-const ZOOM_MAX = 1.6;
 const NORMAL_MAX = 4;
 const HIGHLIGHT_MIN = 6;
 const HIGHLIGHT_MAX = 12;
@@ -25,28 +23,6 @@ const CHORUS_RE = /(chorus|hook|refrain|drop|climax|후렴|하이라이트|클�
 const MODES = ['ghibli', 'full', 'limited'];
 const MOTION_SHARE = [0.4, 0.55]; // 지브리식: 움직이는 컷이 노래의 40~55%
 
-const f = (zoom, x = 0, y = 0) => ({ zoom, x, y });
-const CAMERA_PRESETS = {
-  hold: { start: f(1.04), end: f(1.04), ease: 'linear' },
-  pan_left: { start: f(1.25, 0.8), end: f(1.25, -0.8), ease: 'inout' },
-  pan_right: { start: f(1.25, -0.8), end: f(1.25, 0.8), ease: 'inout' },
-  pan_up: { start: f(1.25, 0, 0.8), end: f(1.25, 0, -0.8), ease: 'inout' },
-  pan_down: { start: f(1.25, 0, -0.8), end: f(1.25, 0, 0.8), ease: 'inout' },
-  zoom_in: { start: f(1.0), end: f(1.2, 0, -0.1), ease: 'inout' },
-  zoom_out: { start: f(1.2, 0, -0.1), end: f(1.0), ease: 'inout' },
-  truck_in: { start: f(1.0), end: f(1.45, 0, -0.15), ease: 'inout' },
-  truck_out: { start: f(1.45, 0, -0.15), end: f(1.0), ease: 'inout' },
-  shake: { start: f(1.08), end: f(1.08), ease: 'linear' },
-};
-
-const MOVE_ALIASES = {
-  static: 'hold', still: 'hold', none: 'hold', fixed: 'hold', locked: 'hold', hold: 'hold',
-  pan: 'pan_right', panleft: 'pan_left', panright: 'pan_right', panup: 'pan_up', pandown: 'pan_down',
-  tiltup: 'pan_up', tiltdown: 'pan_down', tilt: 'pan_up',
-  zoom: 'zoom_in', zoomin: 'zoom_in', zoomout: 'zoom_out', pushin: 'zoom_in', pullout: 'zoom_out', pullback: 'zoom_out',
-  truck: 'truck_in', truckin: 'truck_in', truckout: 'truck_out', dollyin: 'truck_in', dollyout: 'truck_out', dolly: 'truck_in',
-  shake: 'shake', camerashake: 'shake', rumble: 'shake',
-};
 const FX_ALIASES = {
   fadein: 'fade_in', fadefromblack: 'fade_in', fadeout: 'fade_out', fadetoblack: 'fade_out',
   flash: 'flash', whiteflash: 'flash', flashwhite: 'flash',
@@ -433,43 +409,6 @@ function snapToBeats(exp, beats, { min = 3, reach = 3 } = {}) {
   return out;
 }
 
-function normMove(m) {
-  const k = key(m);
-  if (CAMERA_MOVES.includes(String(m || '').toLowerCase())) return String(m).toLowerCase();
-  return MOVE_ALIASES[k] || null;
-}
-
-function normFraming(o, d) {
-  const src = o && typeof o === 'object' ? o : {};
-  return {
-    zoom: Math.round(clamp(num(src.zoom ?? src.z ?? src.scale, d.zoom), ZOOM_MIN, ZOOM_MAX) * 1000) / 1000,
-    x: Math.round(clamp(num(src.x, d.x), -1, 1) * 1000) / 1000,
-    y: Math.round(clamp(num(src.y, d.y), -1, 1) * 1000) / 1000,
-  };
-}
-
-/** 카메라 정리: 모르는 움직임은 'hold', 빠진 구도는 미리 정한 값으로 */
-function normalizeCamera(raw, fx = []) {
-  const src = raw && typeof raw === 'object' ? raw : { move: raw };
-  const move = normMove(src.move || src.type || src.name) || 'hold';
-  const preset = CAMERA_PRESETS[move];
-  const start = normFraming(src.start || src.from, preset.start);
-  const end = normFraming(src.end || src.to, preset.end);
-  if (move.startsWith('pan_')) {
-    // 팬은 움직일 여유(확대)가 있어야 한다
-    start.zoom = Math.max(start.zoom, 1.15);
-    end.zoom = Math.max(end.zoom, 1.15);
-  }
-  if (move === 'shake' || fx.includes('shake')) {
-    start.zoom = Math.max(start.zoom, 1.06);
-    end.zoom = Math.max(end.zoom, 1.06);
-  }
-  const ease = EASES.includes(src.ease) ? src.ease : preset.ease;
-  const cam = { move, start, end, ease };
-  if (move === 'shake') cam.shake = clamp(num(src.shake ?? src.amount, 0.012), 0.002, 0.03);
-  return cam;
-}
-
 function normalizeFx(raw) {
   const list = Array.isArray(raw) ? raw : raw ? [raw] : [];
   const out = [];
@@ -479,21 +418,6 @@ function normalizeFx(raw) {
     if (v && !out.includes(v)) out.push(v);
   }
   return out.slice(0, 3);
-}
-
-function easeP(p, ease) {
-  const t = clamp(p, 0, 1);
-  if (ease === 'in') return t * t;
-  if (ease === 'out') return 1 - (1 - t) * (1 - t);
-  if (ease === 'inout') return t * t * (3 - 2 * t);
-  return t;
-}
-
-/** 진행도 p(0~1) 에서의 카메라 구도 */
-function cameraAt(cam, p) {
-  const e = easeP(p, cam.ease);
-  const lerp = (a, b) => a + (b - a) * e;
-  return { zoom: lerp(cam.start.zoom, cam.end.zoom), x: lerp(cam.start.x, cam.end.x), y: lerp(cam.start.y, cam.end.y) };
 }
 
 /** 그 컷이 등장하는 이야기 막(act) */

@@ -79,7 +79,7 @@ function createWindow() {
     if (input.control && input.shift && input.key.toLowerCase() === 'i') win.webContents.toggleDevTools();
   });
   win.on('close', (e) => {
-    const busy = [...runners.values()].some((r) => r.running);
+    const busy = [...runners.values()].some((r) => r.busy);
     if (!busy) return;
     const choice = dialog.showMessageBoxSync(win, {
       type: 'question',
@@ -167,6 +167,13 @@ async function describeCharacter(draft) {
   }
   const n = normalizeCharacter({ name: 'x', locked: obj.locked, palette: obj.palette, rules: obj.rules });
   return { locked: n.locked, palette: n.palette, rules: n.rules, demo: !!obj.demo };
+}
+
+/** 이름 뒤에 붙는 '이/가': 받침이 있으면 이, 없으면 가 (한글이 아니면 이(가)) */
+function subjectParticle(name) {
+  const code = String(name || '').trim().slice(-1).charCodeAt(0);
+  if (code >= 0xac00 && code <= 0xd7a3) return (code - 0xac00) % 28 ? '이' : '가';
+  return '이(가)';
 }
 
 /** 화면에 보여 줄 시리즈 (캐릭터 이름·잠금·썸네일 포함) */
@@ -290,28 +297,31 @@ function registerIpc() {
 
   // 프로젝트 (= 에피소드)
   h('proj:list', () => store.listProjects());
-  h('proj:create', ({ topic, seriesId, workflowId, songPath, lyricsText, lyricsFilename }) => {
+  // workflowOverrides: 영상 모양 · 움직임 등 이 영상만의 값 { aspect, quality, motionMode, keyRate, drawingBudget, pace } (그 밖의 칸은 무시)
+  h('proj:create', ({ topic, seriesId, workflowId, songPath, lyricsText, lyricsFilename, workflowOverrides }) => {
     const wf = store.getWorkflow(workflowId);
     if (songPath && !fs.existsSync(songPath)) throw new Error('노래 파일을 찾을 수 없습니다.');
-    const p = store.createProject(String(topic || '').trim(), wf, { songPath, lyricsText, lyricsFilename }, { seriesId: seriesId || null });
+    const p = store.createProject(String(topic || '').trim(), wf, { songPath, lyricsText, lyricsFilename }, { seriesId: seriesId || null, workflowOverrides });
     const r = getRunner(p.id);
     r.run();
     return r.snapshot();
   });
   h('proj:get', (id) => getRunner(id).snapshot());
-  h('proj:run', (id, from) => { const r = getRunner(id); r.run({ from }); return true; });
+  h('proj:run', (id, from) => { const r = getRunner(id); r.assertRunnable(); r.run({ from }); return true; });
   h('proj:stop', (id) => { getRunner(id).stop(); return true; });
   h('proj:delete', (id) => {
     const r = runners.get(id);
-    if (r && r.running) throw new Error('진행 중인 작업은 먼저 중지하세요.');
+    if (r && r.busy) throw new Error('진행 중인 작업은 먼저 중지하세요.');
     runners.delete(id);
     return store.deleteProject(id);
   });
   h('proj:provideFile', (id, key, file) => getRunner(id).provideFile(key, file));
   h('proj:skipWaiting', (id, key) => getRunner(id).skipWaiting(key));
   h('proj:continue', (id) => getRunner(id).continueReview());
+  // 그림 한 장 다시 그리기: opts = {id, prompt?, note?} (note = 한국어 요청). 영상 만들기와 따로 도는 대기열에 줄을 서고, 끝나면(또는 멈추면) 그림 항목을 돌려준다
   h('proj:regenerate', (id, kind, shot, opts) => getRunner(id).regenerate(kind, shot, opts || {}));
-  h('proj:replace', async (id, kind, shot, file, drawingId) => { await getRunner(id).replaceItem(kind, shot, file, drawingId); return true; });
+  // opts.matchColors: 같은 컷 첫 그림의 색에 맞춰 줄지 (기본 끔). 바뀐 그림 항목을 돌려준다
+  h('proj:replace', (id, kind, shot, file, drawingId, opts) => getRunner(id).replaceItem(kind, shot, file, drawingId, opts || {}));
   h('proj:retime', (id, shot, index, frames) => getRunner(id).retime(shot, index, frames));
   h('proj:setCamera', (id, shot, move) => getRunner(id).setCamera(shot, move));
   h('proj:updatePlan', (id, plan) => { getRunner(id).updatePlan(plan); return true; });
@@ -337,7 +347,7 @@ function registerIpc() {
   require('./ipc/subs')(h, { store, getRunner });
   h('proj:setProviders', (id, providers, helperSites) => {
     const r = getRunner(id);
-    if (r.running) throw new Error('진행 중에는 바꿀 수 없습니다.');
+    if (r.busy) throw new Error('진행 중에는 바꿀 수 없습니다.');
     r.p.providers = { ...r.p.providers, ...(providers || {}) };
     r.p.helperSites = { ...r.p.helperSites, ...(helperSites || {}) };
     r.save();
@@ -351,7 +361,8 @@ function registerIpc() {
     const se = seriesId ? store.series.get(seriesId) : null;
     const hero = se ? (store.characters.get(se.characterIds[0]) || {}).name || '주인공' : '주인공';
     if (prov === 'demo' || !AGENTS[prov]) {
-      return [`${hero} 이(가) 비 오는 밤 잃어버린 우산을 찾아 마을을 헤매는 이야기`, `${hero} 이(가) 바닷가에서 말하는 갈매기를 만나는 이야기`, `${hero} 이(가) 할머니 댁 다락방에서 마법 지도를 찾는 이야기`, `${hero} 이(가) 여름 축제의 마지막 불꽃놀이를 지키는 이야기`, `${hero} 이(가) 하늘을 나는 기차를 타고 별을 배달하는 이야기`];
+      const who = `${hero}${subjectParticle(hero)}`; // 하루가 · 별이 (받침에 따라)
+      return [`${who} 비 오는 밤 잃어버린 우산을 찾아 마을을 헤매는 이야기`, `${who} 바닷가에서 말하는 갈매기를 만나는 이야기`, `${who} 할머니 댁 다락방에서 마법 지도를 찾는 이야기`, `${who} 여름 축제의 마지막 불꽃놀이를 지키는 이야기`, `${who} 하늘을 나는 기차를 타고 별을 배달하는 이야기`];
     }
     const ctx = se ? `\nIt is the next episode of the animated series "${se.name}" starring ${hero}. Previous episodes: ${se.episodes.slice(-5).map((e) => `EP${e.number} ${e.title}: ${e.summary_ko}`).join(' / ') || '(none yet)'}.` : '';
     const obj = await agentText(prov, {

@@ -6,6 +6,7 @@ const { DEFAULT_SETTINGS, BASE_WORKFLOW, BUILTIN_WORKFLOWS } = require('./defaul
 const { parseLyrics } = require('./media/lyrics');
 const { CharacterStore } = require('./characters');
 const { SeriesStore } = require('./series');
+const { normalizeOverrides } = require('./pipeline/edits-core');
 
 function readJson(file, fallback) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch (_) { return fallback; }
@@ -102,7 +103,8 @@ class Store {
    * @param {string} topic 이번 에피소드 이야기 (비어 있어도 됨)
    * @param {object} workflow
    * @param {{songPath?:string, lyricsText?:string, lyricsFilename?:string}} [media] 올린 노래·가사
-   * @param {{seriesId?:string}} [opts] 시리즈를 고르면 주인공 캐릭터와 그림체 약속을 그대로 가져온다
+   * @param {{seriesId?:string, workflowOverrides?:object}} [opts] 시리즈를 고르면 주인공 캐릭터와 그림체 약속을 그대로 가져온다.
+   *   workflowOverrides: 고른 워크플로우 위에 얕게 얹는 값 (영상 모양 · 화질 · 움직임 · 열쇠 그림 수 · 그림 장수 예산 · 컷 속도). 허용된 6개 칸의 올바른 값만 쓰고 나머지는 조용히 버린다
    */
   createProject(topic, workflow, media = {}, opts = {}) {
     const now = new Date();
@@ -124,7 +126,7 @@ class Store {
       lyricsInput: parseLyrics(media.lyricsText || '', media.lyricsFilename),
       createdAt: Date.now(),
       updatedAt: Date.now(),
-      workflow: { ...workflow },
+      workflow: { ...workflow, ...normalizeOverrides(opts.workflowOverrides) },
       providers: { ...s.providers },
       helperSites: { ...s.helperSites },
       series: series ? this.seriesSnapshot(series, dir) : null,
@@ -205,6 +207,7 @@ class Store {
       .map((p) => ({
         id: p.id, title: (p.plan && p.plan.title) || p.title, topic: p.topic, status: p.status,
         updatedAt: p.updatedAt, createdAt: p.createdAt, workflowName: p.workflow && p.workflow.name,
+        durationSec: (p.music && p.music.analysis && p.music.analysis.duration) || (p.song && p.song.duration) || null,
         series: p.series ? { id: p.series.id, name: p.series.name, emoji: p.series.emoji, episode: p.series.episode } : null,
         thumb: p.drawings && p.drawings.find((k) => k.file) ? path.join(dir, p.id, p.drawings.find((k) => k.file).file) : null,
         final: p.output && p.output.video ? path.join(dir, p.id, p.output.video) : null,

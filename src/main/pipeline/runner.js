@@ -26,6 +26,7 @@ const IB = require('../media/inbetween');
 const { parseLyrics, sectionSummary } = require('../media/lyrics');
 const SubStyle = require('../../shared/subtitle-style');
 const SubCore = require('./subs-core');
+const EC = require('./edits-core');
 const P = require('./prompts');
 const X = require('./xsheet');
 
@@ -87,13 +88,44 @@ class ProjectRunner extends EventEmitter {
       for (const st of Object.values(this.p.steps || {})) {
         if (st.status === 'running' || st.status === 'waiting') { st.status = 'stopped'; st.message = '중지됨 (앱이 꺼졌어요)'; }
       }
-      for (const it of this.p.drawings || []) if (it.status === 'running') it.status = 'pending';
       this.store.saveProject(this.p);
     }
+    // 앱이 그림 한 장을 다시 그리는 도중에 꺼졌을 수도 있다 (진행 중 표시가 없어도) → 어떤 상태로 열리든 '그리는 중' 은 이전 상태로
+    if (this.settleDrawings()) this.store.saveProject(this.p);
     this.running = false;
     this.abort = null;
     this.waiters = new Map();
     this.reviewWaiter = null;
+    this.redrawQueue = []; // 낱장 다시 그리기 대기열 (한 번에 하나씩, 앱을 다시 켜면 비어 있다) → edits.js
+    this._redrawPump = null;
+    this._planning = false; // 그림 순서표를 다시 짜는 중 (setMotion)
+    this._planCtl = null;
+    this._previews = new Map(); // 장면 미리보기 만드는 중: 장면 번호 → Promise
+    this._previewCtls = new Set();
+  }
+
+  /**
+   * 그리는 중('running')으로 남은 그림을 이전 상태로: 파일이 있으면 'done', 없으면 'pending'.
+   * 인물 셀은 배경 빼기를 중간에 멈췄을 수 있으니 다음 렌더링 때 다시 하도록 표시한다.
+   * @returns {boolean} 바꾼 것이 있는지
+   */
+  settleDrawings() {
+    let changed = false;
+    for (const it of this.p.drawings || []) {
+      if (it.status !== 'running') continue;
+      if (it.file && fs.existsSync(path.join(this.dir, it.file))) {
+        it.status = 'done';
+        if (it.kind !== 'bg') Object.assign(it, { keyed: null, cel: null, plate: null, stats: null });
+      } else {
+        it.status = 'pending';
+        it.file = null;
+      }
+      changed = true;
+    }
+    if (changed) {
+      try { fs.rmSync(path.join(this.dir, 'work', 'redraw'), { recursive: true, force: true }); } catch (_) { /* noop */ }
+    }
+    return changed;
   }
 
   // ---------- 공통 ----------
@@ -119,8 +151,30 @@ class ProjectRunner extends EventEmitter {
     this.emit('update', this.snapshot());
   }
 
+  /** 저장하지 않고 화면에만 알린다 (그림 다시 그리기 대기열이 바뀔 때) */
+  emitUpdate() {
+    this.emit('update', this.snapshot());
+  }
+
+  /**
+   * 화면에 보내는 프로젝트 상태: 저장된 프로젝트 + 지금 상태.
+   *  running      영상 만들기(파이프라인)가 돌고 있는지 (그림 한 장 다시 그리기는 running 이 아니다)
+   *  redrawing    다시 그리는 그림 [{shot, id, status:'queued'|'running'}] (한가하면 [])
+   *  changes      고친 것 {render, subs, shots[], count, etaSec}  → 맨 아래 '✨ 고친 것 반영하기' 줄
+   *  subtitleStyle / outSize / canApply / durationSec
+   */
   snapshot() {
-    return { ...this.p, dir: this.dir, running: this.running };
+    const p = this.p;
+    const changes = this.changes();
+    return {
+      ...p, dir: this.dir, running: this.running,
+      redrawing: this.redrawingList(),
+      changes,
+      subtitleStyle: this._subtitleStyle(),
+      outSize: this._subsSize(),
+      canApply: this.canApply(changes),
+      durationSec: this.songSeconds(),
+    };
   }
 
   setStep(step, patch) {
@@ -129,17 +183,28 @@ class ProjectRunner extends EventEmitter {
     this.save();
   }
 
-  checkAbort() {
-    if (this.abort && this.abort.signal.aborted) {
+  /** ctl: 중지 신호. 파이프라인은 this.abort, 그림 다시 그리기·미리보기는 저마다 따로 가진다 */
+  checkAbort(ctl = this.abort) {
+    if (ctl && ctl.signal.aborted) {
       const e = new Error('사용자가 중지했습니다.');
       e.name = 'AbortError';
       throw e;
     }
   }
 
+  /** 영상 만들기(파이프라인)가 돌고 있거나, 그림을 다시 그리는 중 */
+  get busy() { return this.running || this.redrawQueue.length > 0; }
+
+  /** 영상 만들기를 새로 시작할 수 있는지 (그림을 다시 그리는 중이거나 순서표를 다시 짜는 중이면 막는다) */
+  assertRunnable() {
+    if (this.redrawQueue.length) throw new Error(EC.MSG.redrawing);
+    if (this._planning) throw new Error(EC.MSG.planning);
+  }
+
   // ---------- 실행 제어 ----------
   async run({ from } = {}) {
     if (this.running) return;
+    this.assertRunnable();
     this.running = true;
     this.abort = new AbortController();
     this.p.status = 'running';
@@ -210,6 +275,9 @@ class ProjectRunner extends EventEmitter {
     for (const w of this.waiters.values()) w.reject(Object.assign(new Error('사용자가 중지했습니다.'), { name: 'AbortError' }));
     this.waiters.clear();
     if (this.reviewWaiter) { this.reviewWaiter.reject(Object.assign(new Error('사용자가 중지했습니다.'), { name: 'AbortError' })); this.reviewWaiter = null; }
+    this.cancelRedraws(); // 그림 다시 그리기: 그리던 것은 멈추고 이전 그림으로, 기다리던 것은 없앤다
+    if (this._planCtl) this._planCtl.abort();
+    for (const c of this._previewCtls) c.abort();
   }
 
   /** 도우미 대기 중인 항목에 파일을 넣는다 */
@@ -226,24 +294,30 @@ class ProjectRunner extends EventEmitter {
   }
 
   continueReview() {
+    if (this._planning) throw new Error(EC.MSG.planning); // 순서표를 다시 짜는 동안에는 이어갈 수 없다
     if (this.reviewWaiter) { this.reviewWaiter.resolve(); this.reviewWaiter = null; return true; }
     return false;
   }
 
-  async review(stage, message) {
-    this.p.waiting = { key: `review:${stage}`, kind: 'review', title: '확인 후 계속', message };
+  /**
+   * 사용자 확인을 기다린다. 부른 쪽으로 돌려주는 값: 보통 undefined(계속), 'redo' = 확인 중에 설정이 바뀌어서 다시 계산해야 해요.
+   * @param {string} stage @param {string} message @param {object} [extra] 화면에 같이 보낼 값 (p.waiting 에 합친다)
+   */
+  async review(stage, message, extra = {}) {
+    this.p.waiting = { key: `review:${stage}`, kind: 'review', title: '확인 후 계속', message, ...extra };
     this.setStep(this.p.currentStep, { status: 'waiting', message });
-    await new Promise((resolve, reject) => { this.reviewWaiter = { resolve, reject }; });
+    const answer = await new Promise((resolve, reject) => { this.reviewWaiter = { resolve, reject }; });
     this.p.waiting = null;
     this.setStep(this.p.currentStep, { status: 'running', message: '진행 중…' });
+    return answer;
   }
 
   /**
    * 사용자가 웹사이트에서 직접 만들어 다운로드할 때까지 기다린다.
    * 다운로드 폴더 감시 + 자동 클릭 브라우저 다운로드 + '파일 넣기' 버튼 중 먼저 오는 것.
    */
-  async waitForUser(w) {
-    this.checkAbort();
+  async waitForUser(w, ctl = this.abort) {
+    this.checkAbort(ctl);
     const exts = EXTS[w.kind] || [];
     const since = Date.now();
     const site = w.site && SITES[w.site];
@@ -257,7 +331,7 @@ class ProjectRunner extends EventEmitter {
     this.log(`🙋 도우미: ${w.title} - 사용자 작업을 기다리는 중`);
     const local = new AbortController();
     const onAbort = () => local.abort();
-    this.abort.signal.addEventListener('abort', onAbort, { once: true });
+    ctl.signal.addEventListener('abort', onAbort, { once: true });
     const tmpDir = path.join(this.dir, 'work', 'downloads');
     fs.mkdirSync(tmpDir, { recursive: true });
     let unwatchBot = () => {};
@@ -281,7 +355,7 @@ class ProjectRunner extends EventEmitter {
     } finally {
       local.abort();
       unwatchBot();
-      this.abort.signal.removeEventListener('abort', onAbort);
+      ctl.signal.removeEventListener('abort', onAbort);
       this.waiters.delete(w.key);
       this.p.waiting = null;
       this.save();
@@ -294,11 +368,11 @@ class ProjectRunner extends EventEmitter {
     if (!this.p.song || !this.exists(this.p.song.file)) {
       let file;
       if (this.p.providers.text === 'demo') {
-        this.setStep('music', { message: '체험용 예시 노래를 만드는 중…' });
+        this.setStep('music', { message: '연습용 예시 노래를 만드는 중…' });
         fs.mkdirSync(path.join(this.dir, 'work'), { recursive: true });
         file = await demo.demoMusic({ part: 1, seconds: this.p.demoSongSeconds || 60, bpm: 120, out: path.join(this.dir, 'work', 'demo_song.mp3'), signal: this.abort.signal });
         if (!this.p.lyricsInput || !this.p.lyricsInput.lines.length) this.p.lyricsInput = parseLyrics(demo.DEMO_LYRICS);
-        this.log('🎵 노래 파일이 없어서 체험용 예시 노래(박자만 있는 음악)를 썼습니다.');
+        this.log('🎵 노래 파일이 없어서 연습용 예시 노래(박자만 있는 음악)를 썼어요.');
       } else {
         file = await this.waitForUser({ key: 'music:song', kind: 'music', title: '노래 파일 넣기', site: null,
           message: 'Suno 등에서 만든 노래 파일(mp3, wav, m4a, mp4 등)을 넣어 주세요.' });
@@ -442,16 +516,23 @@ class ProjectRunner extends EventEmitter {
   }
 
   // ---------- 4. 타임시트 ----------
-  xsheetContext() {
+  /**
+   * 타임시트를 짜는 데 필요한 값들.
+   * @param {{motionMode?:string, drawingBudget?:number}} [over] 지금 설정 대신 이 값으로 계산해 본다 (그림 줄이기 예상용, 프로젝트는 바꾸지 않는다)
+   */
+  xsheetContext(over = null) {
     const t = this.p.timing;
     const analysis = this.p.music.analysis;
     const frames = t.frames || X.shotFrames(t.segments);
     const highlights = t.highlights || X.markHighlights(t.segments, t.lyrics);
-    const { mode, keyRate, layers } = this;
+    const wf = over ? { ...this.wf, ...over } : this.wf;
+    const mode = X.MODES.includes(wf.motionMode) ? wf.motionMode : 'ghibli';
+    const keyRate = Number(wf.keyRate) === 8 ? 8 : 6;
+    const layers = wf.layers !== false;
     const motion = X.assignMotion(t.segments, frames, highlights, mode);
-    const budget = X.resolveBudget(this.wf, analysis.duration, t.segments.length, { mode, frames, motion, keyRate, layers });
+    const budget = X.resolveBudget(wf, analysis.duration, t.segments.length, { mode, frames, motion, keyRate, layers });
     return {
-      plan: this.p.plan, series: this.series, segments: t.segments, lyrics: t.lyrics, analysis, wf: this.wf,
+      plan: this.p.plan, series: this.series, segments: t.segments, lyrics: t.lyrics, analysis, wf,
       frames, highlights, mode, keyRate, layers, motion, budget,
       alloc: X.allocateDrawings(frames, highlights, Math.max(t.segments.length, budget - (layers ? t.segments.length : 0))),
     };
@@ -463,7 +544,7 @@ class ProjectRunner extends EventEmitter {
     return keyColorFor(pal);
   }
 
-  async step_xsheet() {
+  async step_xsheet(ctl = this.abort) {
     const prov = this.p.providers.text;
     const ctx = this.xsheetContext();
     let raw = null;
@@ -476,11 +557,11 @@ class ProjectRunner extends EventEmitter {
           prompt: X.xsheetPrompt(ctx),
           dir: path.join(this.dir, 'work', 'xsheet'),
           settings: this.settings,
-          signal: this.abort.signal,
+          signal: ctl.signal,
           onLog: (l) => this.log(l),
           accept: X.validXsheet,
           timeoutMs: 20 * 60 * 1000,
-        }));
+        }), ctl);
       } catch (e) {
         if (hardStop(e)) throw e;
         this.log(`⚠ AI 타임시트를 받지 못해서 PC 가 기본 타임시트를 짭니다: ${e.message.split('\n')[0]}`);
@@ -496,21 +577,43 @@ class ProjectRunner extends EventEmitter {
     const e = xs.estimate;
     this.log(`📋 타임시트 (${MODE_KO[xs.mode]}${xs.mode === 'limited' ? '' : ` · 1초 ${xs.keyRate}장`}): 컷 ${xs.shots.length}개 · 움직이는 컷 ${e.motionShots}개(${e.motionSeconds}초) · 예산 ${xs.budget}장`);
     this.log(`🧮 ${X.estimateText(e)}`);
-    fs.mkdirSync(path.join(this.dir, 'output'), { recursive: true });
-    fs.writeFileSync(path.join(this.dir, 'output', 'timesheet.json'), JSON.stringify({ fps: xs.fps, mode: xs.mode, keyRate: xs.keyRate, layers: xs.layers, keyColor: xs.keyColor, budget: xs.budget, totalFrames: xs.totalFrames, estimate: xs.estimate, shots: xs.shots, transitions: xs.transitions }, null, 1));
-    this.writeStoryboard();
+    this.persistXsheet();
     this.save();
   }
 
-  /** 타임시트 → 그림 작업 목록 (컷마다 배경 판 1장 + 인물 셀). 프롬프트가 같으면 이미 그린 그림을 그대로 쓴다. */
+  /** output/timesheet.json 과 storyboard.md 를 지금 타임시트로 다시 쓴다 (타임시트 단계 · 길이/카메라/효과/전환 고친 뒤 · 그림 줄이기 뒤) */
+  persistXsheet() {
+    const xs = this.p.xsheet;
+    if (!xs) return;
+    fs.mkdirSync(path.join(this.dir, 'output'), { recursive: true });
+    fs.writeFileSync(path.join(this.dir, 'output', 'timesheet.json'), JSON.stringify({ fps: xs.fps, mode: xs.mode, keyRate: xs.keyRate, layers: xs.layers, keyColor: xs.keyColor, budget: xs.budget, totalFrames: xs.totalFrames, estimate: xs.estimate, shots: xs.shots, transitions: xs.transitions }, null, 1));
+    this.writeStoryboard();
+  }
+
+  /**
+   * 타임시트 → 그림 작업 목록 (컷마다 배경 판 1장 + 인물 셀).
+   * 프롬프트가 같거나 내가 바꾼 그림(custom: 내 그림 · 한국어로 고쳐 달라고 한 그림 · 주문 글을 직접 고친 그림)은 이미 있는 그림을 그대로 쓴다.
+   * 주문 글이 바뀌어서 다시 그리게 되는 그림은 옛 그림을 '이전 그림' 기록으로 옮겨 두어서 되돌릴 수 있다.
+   */
   buildDrawings() {
     const xs = this.p.xsheet;
     const old = new Map((this.p.drawings || []).map((d) => [d.key, d]));
     this.p.drawings = [];
     const keep = (key, kind, shot, id, prompt) => {
       const o = old.get(key);
-      this.p.drawings.push(o && (o.prompt === prompt || o.custom) && this.exists(o.file)
-        ? { ...o, kind } : { key, kind, shot: shot.shot, id, prompt, status: 'pending', file: null });
+      if (o && (o.prompt === prompt || o.custom) && this.exists(o.file)) {
+        const kept = { ...o, kind };
+        // 그림은 지키되, 직접 고친 주문 글이 아니면 주문 글은 새 타임시트 것으로 (나중에 다시 그리면 지금 장면 설명대로 그린다). 옛 기록(source 없음)은 그대로
+        if (o.custom && o.prompt !== prompt && o.source !== undefined && !o.promptEdited) kept.prompt = prompt;
+        this.p.drawings.push(kept);
+        return;
+      }
+      const fresh = { key, kind, shot: shot.shot, id, prompt, status: 'pending', file: null };
+      if (o) {
+        // 버려지는 그림: 기록은 이어받고, 그림 파일은 기록으로 옮긴다
+        Object.assign(fresh, this._carryHistory(o));
+      }
+      this.p.drawings.push(fresh);
     };
     for (const shot of xs.shots) {
       if (xs.layers && shot.bg) keep(`${shot.shot}:${BG_ID}`, 'bg', shot, BG_ID, P.composeBgPrompt({ plan: this.p.plan, series: this.series, shot, wf: this.wf }));
@@ -528,14 +631,24 @@ class ProjectRunner extends EventEmitter {
   // ---------- 5. 그림 ----------
   async step_drawings() {
     fs.mkdirSync(path.join(this.dir, 'drawings'), { recursive: true });
-    const items = this.p.drawings || [];
-    const todo = items.filter((it) => !(it.status === 'done' && this.exists(it.file)));
-    const total = items.length;
-    const xs = this.p.xsheet;
-    // 그리기 전에 예상 장수·시간을 보여 주고 멈춘다 (체험 모드는 공짜라 멈추지 않음)
-    if (todo.length && !this.p.drawingsApproved && this.wf.reviewBeforeDrawings !== false && this.p.providers.image !== 'demo') {
-      await this.review('drawings', `그림을 그리기 전에 확인해 주세요. ${X.estimateText(xs.estimate)}. 괜찮으면 [계속] 을 눌러 주세요. 너무 많으면 [중지] 후 워크플로우에서 움직임 방식(리미티드)이나 그림 장수 예산을 줄일 수 있어요.`);
+    let items;
+    let todo;
+    let xs;
+    // 그리기 전에 예상 장수·시간을 보여 주고 멈춘다 (연습 모드는 공짜라 멈추지 않음).
+    // 멈춰 있는 동안 [그림 줄여서 빨리](setMotion)를 누르면 타임시트를 다시 짜고 ('redo') 새 예상으로 다시 묻는다.
+    for (;;) {
+      items = this.p.drawings || [];
+      todo = items.filter((it) => !(it.status === 'done' && this.exists(it.file)));
+      xs = this.p.xsheet;
+      if (todo.length && !this.p.drawingsApproved && this.wf.reviewBeforeDrawings !== false && this.p.providers.image !== 'demo') {
+        const answer = await this.review('drawings',
+          `그림을 그리기 전에 확인해 주세요. ${X.estimateText(xs.estimate)}. 괜찮으면 [계속] 을 눌러 주세요. 너무 많으면 [그림 줄여서 빨리] 로 장수를 줄일 수 있어요.`,
+          this.drawingsReviewExtra());
+        if (answer === 'redo') continue;
+      }
+      break;
     }
+    const total = items.length;
     this.p.drawingsApproved = true;
     const prov = this.p.providers.image || '';
     const conc = prov === 'helper' || prov.startsWith('bot:') ? 1 : Math.max(1, this.settings.concurrency.image || 1);
@@ -557,6 +670,7 @@ class ProjectRunner extends EventEmitter {
         const g = groups[gi++];
         for (const it of g.items) {
           this.checkAbort();
+          if (it.status === 'done' && this.exists(it.file)) continue; // 기다리는 사이에 내 그림으로 바꾼 그림은 그대로 둔다
           it.status = 'running';
           it.error = null;
           this.save();
@@ -588,24 +702,31 @@ class ProjectRunner extends EventEmitter {
    * 이 그림에 붙일 기준 그림.
    *  - 배경 판: 없음 (인물이 들어가면 안 되므로)
    *  - 인물 셀: 같은 컷의 바로 앞 셀이 있으면 그걸 '첫 번째' 로 붙이고 고치기(edit)로 부탁 + 고정 캐릭터 시트
+   *  - editSelf(한국어로 고쳐 달라고 할 때): 지금 이 그림 자신을 '고칠 그림' 으로 첫 번째에 붙인다 (배경 판은 배경 고치기 설명으로)
    */
-  drawingRefs(shot, id) {
+  drawingRefs(shot, id, { editSelf = null } = {}) {
     const refs = [];
     const notes = [];
-    if (id === BG_ID) return { refs, notes, prev: null };
+    if (id === BG_ID && !editSelf) return { refs, notes, prev: null };
     const layers = this.p.xsheet && this.p.xsheet.layers;
     const idx = shot.drawings.findIndex((x) => x.id === id);
     let prev = null;
-    for (let k = idx - 1; k >= 0; k--) {
-      const it = this.itemOf(shot.shot, shot.drawings[k].id);
-      if (it && it.status === 'done' && this.exists(it.file)) { prev = it; break; }
-    }
-    if (prev) {
-      refs.push(this.abs(layers && prev.keyed && this.exists(prev.plate) ? prev.plate : prev.file));
-      notes.push(layers ? PREV_CEL_NOTE : PREV_NOTE);
+    if (editSelf) {
+      refs.push(this.abs(layers && editSelf.keyed && this.exists(editSelf.plate) ? editSelf.plate : editSelf.file));
+      notes.push(id === BG_ID ? EC.CUR_NOTE.bg : layers ? EC.CUR_NOTE.cel : EC.CUR_NOTE.full);
+      prev = editSelf;
+    } else {
+      for (let k = idx - 1; k >= 0; k--) {
+        const it = this.itemOf(shot.shot, shot.drawings[k].id);
+        if (it && it.status === 'done' && this.exists(it.file)) { prev = it; break; }
+      }
+      if (prev) {
+        refs.push(this.abs(layers && prev.keyed && this.exists(prev.plate) ? prev.plate : prev.file));
+        notes.push(layers ? PREV_CEL_NOTE : PREV_NOTE);
+      }
     }
     const s = this.series;
-    if (s) {
+    if (s && id !== BG_ID) {
       const d = shot.drawings.find((x) => x.id === id) || {};
       const cast = P.charactersInShot(this.p.plan, shot, d).filter((c) => c.fixed);
       const perChar = cast.length > 1 ? 2 : 3;
@@ -624,37 +745,48 @@ class ProjectRunner extends EventEmitter {
     return { refs, notes, prev };
   }
 
-  /** 그림 한 장 그리기 → 작업 폴더 안 상대 경로 (셀이면 배경까지 빼 둔다) */
-  async drawOne(it) {
+  /**
+   * 그림 한 장 그리기 → 작업 폴더 안 상대 경로 (셀이면 배경까지 빼 둔다)
+   * @param {object} it 그림 항목
+   * @param {AbortController} [ctl] 중지 신호 (영상 만들기는 this.abort, 낱장 다시 그리기는 자기 것)
+   * @param {{note?:string, variant?:number}} [o] note: 한국어 요청 (지금 그림을 고쳐 달라고 한다) · variant: 연습 모드 그림이 달라 보이게 하는 번호
+   */
+  async drawOne(it, ctl = this.abort, o = {}) {
     const shot = this.shotOf(it.shot);
     const xs = this.p.xsheet;
     const isBg = it.kind === 'bg';
-    const { refs, notes, prev } = this.drawingRefs(shot, it.id);
+    const { refs, notes, prev } = this.drawingRefs(shot, it.id, { editSelf: o.note ? it : null });
     const index = shot.drawings.findIndex((d) => d.id === it.id);
     const def = shot.drawings[index] || { prompt_en: '' };
-    const prompt = prev ? P.celEditPrefix(def, xs.layers ? xs.keyColor : null) + it.prompt : it.prompt;
+    let prompt;
+    if (o.note) prompt = EC.notePrompt({ base: it.prompt, note: o.note, kind: isBg ? 'bg' : xs.layers ? 'cel' : 'full', keyColor: xs.layers ? xs.keyColor : null });
+    else prompt = prev ? P.celEditPrefix(def, xs.layers ? xs.keyColor : null) + it.prompt : it.prompt;
     const file = await this.genImage({
       key: `image:${it.shot}:${it.id}`, prompt, refs, refNotes: notes,
       title: isBg ? `배경 컷${it.shot}` : `그림 컷${it.shot}-${it.id}`,
-      demo: { kind: isBg ? 'bg' : xs.layers ? 'cel' : 'full', shot: it.shot, index, count: shot.drawings.length, highlight: shot.highlight, motion: !!shot.motion, keyColor: xs.keyColor },
-    }, `s${pad2(it.shot)}_${it.id}`);
+      demo: { kind: isBg ? 'bg' : xs.layers ? 'cel' : 'full', shot: it.shot, index, count: shot.drawings.length, highlight: shot.highlight, motion: !!shot.motion, keyColor: xs.keyColor, variant: o.variant || 0 },
+    }, `s${pad2(it.shot)}_${it.id}`, ctl);
     if (!file) return null;
     const dst = path.join(this.dir, 'drawings', `shot${pad2(it.shot)}_${it.id}${path.extname(file).toLowerCase() || '.png'}`);
     this.removeOld(it.file, dst);
     fs.copyFileSync(file, dst);
     it.file = this.rel(dst);
-    if (!isBg && xs.layers) await this.processCelItem(it, shot);
+    if (!isBg && xs.layers) await this.processCelItem(it, shot, ctl);
     return it.file;
   }
 
-  /** 셀 배경 빼기 + 색 맞추기 (같은 컷 첫 셀 기준) */
-  async processCelItem(it, shot) {
+  /**
+   * 셀 배경 빼기 + 색 맞추기 (같은 컷 첫 셀 기준).
+   * 색 맞추기는 AI 가 그린 그림에는 켜고, 내가 넣은 그림(source 'user')에는 끈다 (고르면 켤 수 있다: it.matchColors).
+   */
+  async processCelItem(it, shot, ctl = this.abort, o = {}) {
     const xs = this.p.xsheet;
     const first = shot.drawings[0] && this.itemOf(shot.shot, shot.drawings[0].id);
-    const refStats = first && first !== it && first.keyed ? first.stats : null;
+    const match = o.matchColors !== undefined ? !!o.matchColors : it.source === 'user' ? !!it.matchColors : true;
+    const refStats = match && first && first !== it && first.keyed ? first.stats : null;
     const base = path.join(this.dir, 'drawings', 'cels', `shot${pad2(shot.shot)}_${it.id}`);
     fs.mkdirSync(path.dirname(base), { recursive: true });
-    const r = await processCel(this.abs(it.file), { celOut: `${base}.png`, plateOut: `${base}_plate.png`, keyColor: xs.keyColor, refStats, signal: this.abort && this.abort.signal });
+    const r = await processCel(this.abs(it.file), { celOut: `${base}.png`, plateOut: `${base}_plate.png`, keyColor: xs.keyColor, refStats, signal: ctl && ctl.signal });
     if (r.keyed) {
       Object.assign(it, { keyed: true, cel: this.rel(r.cel), plate: this.rel(r.plate), stats: r.stats, keySource: r.source });
     } else {
@@ -663,39 +795,42 @@ class ProjectRunner extends EventEmitter {
     }
   }
 
-  async genImage({ key, prompt, refs, refNotes, title, demo: dm }, tag) {
+  async genImage({ key, prompt, refs, refNotes, title, demo: dm }, tag, ctl = this.abort) {
     const prov = this.p.providers.image;
     const work = path.join(this.dir, 'work', 'images', `${tag}_${Date.now()}`);
     fs.mkdirSync(work, { recursive: true });
+    const signal = ctl && ctl.signal;
     if (prov === 'demo') {
-      // 체험 그림은 화면보다 조금 크게 (카메라가 움직일 여유)
+      // 연습 그림은 화면보다 조금 크게 (카메라가 움직일 여유)
       const { w, h } = outputSize(this.wf.aspect, this.wf.quality);
       const size = { w: Math.round(w * 1.2), h: Math.round(h * 1.2) };
       const pal = this.series && this.series.characters[0] ? this.series.characters[0].palette : demo.DEMO_CHARACTER.palette;
       const out = path.join(work, 'demo.png');
       const d = dm || {};
-      if (d.kind === 'bg') return demo.demoBg({ ...size, shot: d.shot, out, signal: this.abort.signal });
-      if (d.kind === 'cel') return demo.demoCel({ ...size, ...d, palette: pal, out, signal: this.abort.signal });
-      return demo.demoDrawing({ ...size, ...d, palette: pal, out, signal: this.abort.signal });
+      // 다시 그릴 때마다 연습 그림이 눈에 띄게 달라지도록 자세(번호)·배경색(컷 번호)을 한 칸씩 옮긴다
+      const v = Number(d.variant) || 0;
+      if (d.kind === 'bg') return demo.demoBg({ ...size, shot: d.shot + v, out, signal });
+      if (d.kind === 'cel') return demo.demoCel({ ...size, ...d, index: (d.index || 0) + v, palette: pal, out, signal });
+      return demo.demoDrawing({ ...size, ...d, index: (d.index || 0) + v, palette: pal, out, signal });
     }
     if (AGENTS[prov]) {
-      return agentImage(prov, { prompt, aspect: this.wf.aspect, refs, refNotes, dir: work, settings: this.settings, signal: this.abort.signal, onLog: (l) => this.log(l) });
+      return agentImage(prov, { prompt, aspect: this.wf.aspect, refs, refNotes, dir: work, settings: this.settings, signal, onLog: (l) => this.log(l) });
     }
     const copy = `${prompt}\n(${this.wf.aspect})`;
     if (prov.startsWith('bot:')) {
       const site = prov.slice(4);
-      const got = await this.tryBot(`${site}.image`, { prompt, aspect: this.wf.aspect, reference: refs[0] || '' }, work, title);
+      const got = await this.tryBot(`${site}.image`, { prompt, aspect: this.wf.aspect, reference: refs[0] || '' }, work, title, ctl);
       if (got) return got;
       return this.waitForUser({ key, kind: 'image', title, site, copyText: copy, image: refs[0], images: refs, imageNotes: refNotes,
-        message: '자동 클릭이 막혀서 직접 마무리가 필요합니다. 열린 브라우저 창에서 그림을 만든 뒤 다운로드하면 자동으로 가져옵니다.' });
+        message: '자동 클릭이 막혀서 직접 마무리가 필요합니다. 열린 브라우저 창에서 그림을 만든 뒤 다운로드하면 자동으로 가져옵니다.' }, ctl);
     }
     const site = this.p.helperSites.image || 'gemini';
     return this.waitForUser({ key, kind: 'image', title, site, copyText: copy, image: refs[0], images: refs, imageNotes: refNotes,
-      message: `① 아래 기준 그림(앞 그림·캐릭터 시트)을 [${(SITES[site] || {}).name || '사이트'}] 에 첨부 → ② [프롬프트 복사] 후 붙여넣고 생성 → ③ 다운로드. 자동으로 가져옵니다.` });
+      message: `① 아래 기준 그림(앞 그림·캐릭터 시트)을 [${(SITES[site] || {}).name || '사이트'}] 에 첨부 → ② [프롬프트 복사] 후 붙여넣고 생성 → ③ 다운로드. 자동으로 가져옵니다.` }, ctl);
   }
 
   /** 자동 클릭 시도. 막히면 null (→ 도우미 모드) */
-  async tryBot(taskId, params, outDir, title) {
+  async tryBot(taskId, params, outDir, title, ctl = this.abort) {
     const s = this.settings.bot;
     if (!this.bot || !s.enabled || !s.acceptedRisk) {
       this.log('ℹ 자동 클릭이 꺼져 있어 도우미 모드로 진행합니다. (설정에서 켤 수 있습니다)');
@@ -704,7 +839,7 @@ class ProjectRunner extends EventEmitter {
     try {
       this.log(`🤖 자동 클릭: ${title}`);
       return await this.bot.run(taskId, params, {
-        outDir, signal: this.abort.signal,
+        outDir, signal: ctl.signal,
         onStatus: (st) => {
           if (st.state === 'login' || st.state === 'captcha') {
             this.p.waiting = { key: `bot:${taskId}`, kind: 'bot', title, message: st.message };
@@ -725,10 +860,10 @@ class ProjectRunner extends EventEmitter {
     }
   }
 
-  async withRetry(label, fn) {
+  async withRetry(label, fn, ctl = this.abort) {
     let lastErr;
     for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
-      this.checkAbort();
+      this.checkAbort(ctl);
       try {
         return await fn();
       } catch (e) {
@@ -736,7 +871,7 @@ class ProjectRunner extends EventEmitter {
         if (hardStop(e)) throw e;
         if (attempt < this.maxRetries) {
           this.log(`↻ ${label} 재시도 (${attempt + 1}/${this.maxRetries}): ${e.message.split('\n')[0]}`);
-          await sleep(3000 * (attempt + 1), this.abort.signal);
+          await sleep(3000 * (attempt + 1), ctl && ctl.signal);
         }
       }
     }
@@ -749,7 +884,7 @@ class ProjectRunner extends EventEmitter {
    * 없는 그림은 같은 컷(없으면 앞 컷)의 그림으로 대신한다.
    * @returns {Map<string, {file:string, raw:string, plate:string|null, keyed:boolean}|null>}
    */
-  shotMaterials(shotIdx) {
+  shotMaterials(shotIdx, quiet = false) {
     const xs = this.p.xsheet;
     const shot = xs.shots[shotIdx];
     const look = (no, id) => {
@@ -767,14 +902,14 @@ class ProjectRunner extends EventEmitter {
     }
     for (const d of shot.drawings) {
       const m = look(shot.shot, d.id);
-      if (!m) this.log(`ℹ 컷 ${shot.shot}: 그림 ${d.id} 가 없어서 다른 그림으로 대신합니다.`);
+      if (!m && !quiet) this.log(`ℹ 컷 ${shot.shot}: 그림 ${d.id} 가 없어서 다른 그림으로 대신합니다.`);
       map.set(d.id, m || fallback);
     }
     return map;
   }
 
   /** 배경 판: 이 컷 → 없으면 가까운 컷의 배경 → 그래도 없으면 빈 종이색 */
-  async shotBg(shotIdx, work) {
+  async shotBg(shotIdx, work, ctl = this.abort, quiet = false) {
     const xs = this.p.xsheet;
     const order = [shotIdx];
     for (let k = 1; k < xs.shots.length; k++) order.push(shotIdx - k, shotIdx + k);
@@ -782,7 +917,7 @@ class ProjectRunner extends EventEmitter {
       const s = xs.shots[k];
       const it = s && this.itemOf(s.shot, BG_ID);
       if (it && it.file && this.exists(it.file)) {
-        if (k !== shotIdx) this.log(`ℹ 컷 ${xs.shots[shotIdx].shot}: 배경 판이 없어서 컷 ${s.shot} 의 배경을 씁니다.`);
+        if (k !== shotIdx && !quiet) this.log(`ℹ 컷 ${xs.shots[shotIdx].shot}: 배경 판이 없어서 컷 ${s.shot} 의 배경을 씁니다.`);
         return this.abs(it.file);
       }
     }
@@ -790,23 +925,30 @@ class ProjectRunner extends EventEmitter {
     if (!fs.existsSync(blank)) {
       const px = new Uint8ClampedArray(64 * 36 * 3);
       for (let i = 0; i < px.length; i += 3) { px[i] = 0xf4; px[i + 1] = 0xec; px[i + 2] = 0xd8; }
-      await writePng(blank, px, 64, 36, { rgb: true, signal: this.abort && this.abort.signal });
+      await writePng(blank, px, 64, 36, { rgb: true, signal: ctl && ctl.signal });
     }
     return blank;
   }
 
-  /** 셀 배경 빼기를 아직 안 한 그림(직접 넣은 파일 등)은 렌더링 전에 처리 */
-  async ensureCelsProcessed() {
+  /**
+   * 셀 배경 빼기를 아직 안 한 그림(직접 넣은 파일 등)은 렌더링 전에 처리
+   * @param {AbortController} [ctl] @param {{shot?:number}} [only] 이 컷만
+   * @returns {Promise<number>} 처리한 그림 수
+   */
+  async ensureCelsProcessed(ctl = this.abort, only = {}) {
     const xs = this.p.xsheet;
-    if (!xs.layers) return;
+    if (!xs.layers) return 0;
+    let n = 0;
     for (const it of this.p.drawings || []) {
       if (it.kind === 'bg' || it.status !== 'done' || !this.exists(it.file)) continue;
+      if (only.shot !== undefined && it.shot !== only.shot) continue;
       if (it.keyed === undefined || it.keyed === null || (it.keyed && !(this.exists(it.cel) && this.exists(it.plate)))) {
-        this.checkAbort();
+        this.checkAbort(ctl);
         const shot = this.shotOf(it.shot);
-        if (shot) await this.processCelItem(it, shot);
+        if (shot) { await this.processCelItem(it, shot, ctl); n++; }
       }
     }
+    return n;
   }
 
   /**
@@ -876,6 +1018,10 @@ class ProjectRunner extends EventEmitter {
   async step_render() {
     const xs = this.p.xsheet;
     if (!xs) throw new Error('타임시트가 없습니다. 타임시트 단계부터 다시 해 주세요.');
+    const startedMs = Date.now();
+    let shotsRendered = 0;
+    let shotMsTotal = 0;
+    const kinds = { motion: { n: 0, ms: 0 }, hold: { n: 0, ms: 0 } }; // 움직이는 장면 / 멈춘 장면 따로 평균
     const { w, h } = outputSize(this.wf.aspect, this.wf.quality);
     const fin = this.wf.finish || {};
     const work = path.join(this.dir, 'work', 'render');
@@ -904,7 +1050,9 @@ class ProjectRunner extends EventEmitter {
       const lead = i > 0 ? xs.transitions[i - 1].frames / 2 : 0;
       const tail = i < xs.transitions.length ? xs.transitions[i].frames / 2 : 0;
       const mats = this.shotMaterials(i);
+      const ibStart = Date.now();
       const ibs = await this.inbetweensFor(shot, mats, eng, tally);
+      const ibMs = Date.now() - ibStart; // 이 컷의 사이 그림을 새로 만드는 데 걸린 시간 (다 있으면 거의 0)
       const done = (a, b) => { const r = ibs.get(X.pairKey(a, b)); return !!(r && r.status === 'done'); };
       const table = X.expandExposure(shot, done);
       const layers = new Map();
@@ -927,10 +1075,16 @@ class ProjectRunner extends EventEmitter {
         continue;
       }
       this.setStep('render', { message: `컷 ${i + 1}/${n} 그리는 중 (배경·인물 겹치기·카메라)`, progress: { done: i, total: n + 1 } });
+      const shotStart = Date.now();
       const r = await renderShot({
         shot, table, bg, layers, parallax, W: w, H: h, lead, tail, boil: !!fin.boil, seed: 1, out, signal: this.abort.signal,
         onProgress: (fr) => this.setStep('render', { message: `컷 ${i + 1}/${n} 그리는 중 ${Math.round(fr * 100)}%`, progress: { done: i + fr, total: n + 1 } }),
       });
+      const cost = Date.now() - shotStart + ibMs; // 장면 하나를 새로 만드는 데 드는 시간 = 사이 그림 + 합성
+      shotsRendered++;
+      shotMsTotal += cost;
+      kinds[shot.motion ? 'motion' : 'hold'].n++;
+      kinds[shot.motion ? 'motion' : 'hold'].ms += cost;
       shots.push({ shot: shot.shot, key, file: this.rel(out), frames: r.frames, ...meta });
       this.p.render = { ...(this.p.render || {}), shots: [...shots, ...prev.filter((x) => !shots.some((y) => y.shot === x.shot))] };
       this.save();
@@ -947,6 +1101,7 @@ class ProjectRunner extends EventEmitter {
     const paper = fin.paper ? await makePaperTexture(w, h, path.join(work, 'paper.png'), { signal: this.abort.signal }) : null;
     const clean = path.join(outDir, 'animation_clean.mp4');
     this.setStep('render', { message: '컷을 잇고 필름 느낌·노래를 입히는 중…', progress: { done: n, total: n + 1 } });
+    const assembleStart = Date.now();
     await assembleAnimation({
       shots: shots.map((s) => ({ file: this.abs(s.file), frames: s.frames })),
       transitions: xs.transitions,
@@ -957,7 +1112,19 @@ class ProjectRunner extends EventEmitter {
     });
     this.p.output = { ...(this.p.output || {}), clean: this.rel(clean), cleanAt: Date.now() };
     this.p.renderStale = false;
+    this.p.dirtyShots = []; // 지금까지 고친 장면이 모두 영상에 들어갔다
     this.p.subsStale = true;
+    // 다음 '고친 것 반영하기' 에서 걸릴 시간을 어림하려고 이번에 잰 시간을 남긴다 (장면 하나 평균 · 이어 붙이기 · 전체)
+    const prevRender = this.p.steps.render || {};
+    this.p.steps.render = {
+      ...prevRender,
+      lastMs: Date.now() - startedMs,
+      shotsRendered, shotsTotal: n,
+      shotMs: shotsRendered ? Math.round(shotMsTotal / shotsRendered) : prevRender.shotMs || null,
+      motionShotMs: kinds.motion.n ? Math.round(kinds.motion.ms / kinds.motion.n) : prevRender.motionShotMs || null,
+      holdShotMs: kinds.hold.n ? Math.round(kinds.hold.ms / kinds.hold.n) : prevRender.holdShotMs || null,
+      assembleMs: Date.now() - assembleStart,
+    };
     this.log(`🎬 깨끗한 원본 (자막 없음): ${this.rel(clean)} · ${xs.totalFrames}프레임`);
     this.save();
   }
@@ -1037,79 +1204,32 @@ class ProjectRunner extends EventEmitter {
   }
 
   // ---------- 개별 수정 ----------
-  /** 그림 한 장만 다시 그리기 (진행 중이 아닐 때) */
-  async regenerate(kind, shotNo, { id, prompt } = {}) {
-    if (kind !== 'drawing') throw new Error('알 수 없는 항목입니다.');
-    if (this.running) throw new Error('진행 중에는 다시 그릴 수 없습니다. 먼저 중지하세요.');
-    const it = (this.p.drawings || []).find((x) => x.shot === shotNo && x.id === id);
-    if (!it) throw new Error('그림을 찾을 수 없습니다.');
-    this.running = true;
-    this.abort = new AbortController();
-    this.save();
-    try {
-      if (prompt && prompt !== it.prompt) { it.prompt = prompt; it.custom = true; }
-      it.status = 'running';
-      this.save();
-      const rel = await this.drawOne(it);
-      if (rel) { Object.assign(it, { file: rel, status: 'done', error: null, updatedAt: Date.now() }); this.p.renderStale = true; } else it.status = it.file ? 'done' : 'pending';
-      this.log(`✔ 그림 컷${shotNo}-${id} 다시 그리기 완료`);
-    } catch (e) {
-      it.status = 'error';
-      it.error = e.message.split('\n')[0];
-      this.log(`✖ 다시 그리기 실패: ${e.message}`);
-      throw e;
-    } finally {
-      this.running = false;
-      this.p.waiting = null;
-      this.save();
-    }
-  }
+  // 그림 한 장 다시 그리기(regenerate) · 장면 그림 전부 다시 그리기(regenerateCut) · 내 그림으로 바꾸기(replaceItem) · 예전 그림으로 되돌리기(restoreVersion) 와
+  // 장면 넘기기 · 효과 · 미리보기 · 고친 것 반영하기 · 그림 줄이기는 pipeline/edits.js 에 있다.
 
-  /** 사용자가 고른 그림 파일로 교체 (인물 셀이면 배경 빼기까지) */
-  async replaceItem(kind, shotNo, file, id) {
-    if (kind !== 'drawing') throw new Error('알 수 없는 항목입니다.');
-    const it = (this.p.drawings || []).find((x) => x.shot === shotNo && x.id === id);
-    if (!it) throw new Error('그림을 찾을 수 없습니다.');
-    const dst = path.join(this.dir, 'drawings', `shot${pad2(shotNo)}_${id}${path.extname(file).toLowerCase() || '.png'}`);
-    fs.mkdirSync(path.dirname(dst), { recursive: true });
-    this.removeOld(it.file, dst);
-    fs.copyFileSync(file, dst);
-    Object.assign(it, { file: this.rel(dst), status: 'done', error: null, updatedAt: Date.now(), keyed: null, cel: null, plate: null, stats: null });
-    const xs = this.p.xsheet;
-    const shot = xs && this.shotOf(shotNo);
-    if (xs && xs.layers && it.kind !== 'bg' && shot) {
-      try {
-        await this.processCelItem(it, shot);
-      } catch (e) {
-        this.log(`⚠ 컷${shotNo}-${id} 배경 빼기 실패 (렌더링 때 다시 해 볼게요): ${e.message.split('\n')[0]}`);
-      }
-    }
-    this.p.renderStale = true;
-    this.save();
-  }
-
-  /** 타임시트에서 그림 한 칸의 노출 프레임 바꾸기 (컷 길이는 그대로) */
+  /** 타임시트에서 그림 한 칸의 노출 프레임 바꾸기 (컷 길이는 그대로). 그림을 다시 그리는 중에도 할 수 있다 */
   retime(shotNo, index, frames) {
-    if (this.running) throw new Error('진행 중에는 바꿀 수 없습니다.');
+    if (this.running) throw new Error(EC.MSG.runningNoEdit);
     const xs = this.p.xsheet;
     const i = xs ? xs.shots.findIndex((s) => s.shot === shotNo) : -1;
-    if (i < 0) throw new Error('컷을 찾을 수 없습니다.');
+    if (i < 0) throw new Error(EC.MSG.noShot);
     xs.shots[i] = X.retimeExposure(xs.shots[i], index, frames);
-    this.p.renderStale = true;
-    this.writeStoryboard();
+    this.markDirty(shotNo);
+    this.persistXsheet();
     this.save();
     return xs.shots[i];
   }
 
-  /** 컷의 카메라 움직임 바꾸기 */
+  /** 컷의 카메라 움직임 바꾸기. 그림을 다시 그리는 중에도 할 수 있다 */
   setCamera(shotNo, move) {
-    if (this.running) throw new Error('진행 중에는 바꿀 수 없습니다.');
+    if (this.running) throw new Error(EC.MSG.runningNoEdit);
     const xs = this.p.xsheet;
     const shot = xs && xs.shots.find((s) => s.shot === shotNo);
-    if (!shot) throw new Error('컷을 찾을 수 없습니다.');
+    if (!shot) throw new Error(EC.MSG.noShot);
+    if (!X.CAMERA_MOVES.includes(move)) throw new Error('알 수 없는 카메라 움직임이에요.');
     shot.camera = X.normalizeCamera({ move }, shot.fx);
-    this.p.renderStale = true;
-    this.writeStoryboard();
+    this.markDirty(shotNo);
+    this.persistXsheet();
     this.save();
     return shot;
   }
@@ -1251,6 +1371,8 @@ class ProjectRunner extends EventEmitter {
     return this.p.music.analysis;
   }
 }
+
+ProjectRunner.RENDER_VERSION = RENDER_VERSION; // edits.js 의 장면 미리보기가 같은 캐시 규칙을 쓴다
 
 // 편집 · 가사 자막 메서드는 별도 파일에서 섞어 넣는다 (DESIGN §3.1)
 Object.assign(ProjectRunner.prototype, require('./edits'), require('./subs'));

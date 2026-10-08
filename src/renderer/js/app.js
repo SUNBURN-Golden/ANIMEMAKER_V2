@@ -33,7 +33,22 @@
 
   let navSeq = 0;
 
+  /**
+   * 화면이 "저장하지 않은 변경이 있어요. 나갈까요?" 같은 물음을 하고 싶을 때 함수를 넣어 둔다.
+   * 함수는 (Promise 가능) true 면 이동, false 면 지금 화면에 머문다. 한 번 물은 뒤에는 자동으로 비워진다.
+   */
+  AM.leaveGuard = null;
+
   AM.go = function go(view, arg) {
+    if (AM.leaveGuard) {
+      const guard = AM.leaveGuard;
+      Promise.resolve().then(() => guard()).then((ok) => {
+        if (ok === false) return;
+        if (AM.leaveGuard === guard) AM.leaveGuard = null;
+        go(view, arg);
+      }, () => { if (AM.leaveGuard === guard) AM.leaveGuard = null; go(view, arg); });
+      return;
+    }
     if (!views[view]) view = 'home';
     if (AM.state.view === 'project' && view !== 'project' && AM.views.projectLeave) AM.views.projectLeave();
     AM.state.view = view;

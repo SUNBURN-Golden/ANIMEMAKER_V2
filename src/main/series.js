@@ -1,11 +1,14 @@
 'use strict';
 // 시리즈 (에피소드 묶음): 고정 주인공(캐릭터 파일) + 그림체 약속(스타일 바이블) + 에피소드 기록.
 // 새 작업 = 시리즈의 새 에피소드. 기획 AI 는 지난 에피소드 요약을 보고 이야기를 이어 간다.
+//  - 값 정리(normalizeSeries, normalizeEpisode …)는 series-core.js 로 옮겨 폰 앱과 같은 파일을 쓴다.
+//    여기서는 그 이름을 그대로 다시 내보내므로 `require('./series')` 는 예전과 똑같이 쓸 수 있다.
+//  - 여기에 남은 것: SeriesStore (userData/series/*.json 읽고 쓰기, fs).
 const fs = require('fs');
 const path = require('path');
-const crypto = require('crypto');
-const { DEFAULT_ART_STYLE } = require('./defaults');
-const { normalizeStyle } = require('../shared/subtitle-style');
+const core = require('./series-core');
+
+const { normalizeSeries, normalizeEpisode, newSeriesId } = core;
 
 function readJson(file, fallback) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch (_) { return fallback; }
@@ -16,49 +19,6 @@ function writeJson(file, data) {
   const tmp = `${file}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8');
   try { fs.renameSync(tmp, file); } catch (_) { fs.writeFileSync(file, JSON.stringify(data, null, 2), 'utf8'); try { fs.unlinkSync(tmp); } catch (__) { /* noop */ } }
-}
-
-function clean(s, max = 1200) {
-  return String(s == null ? '' : s).replace(/[ \t]+/g, ' ').trim().slice(0, max);
-}
-
-function normalizeEpisode(e) {
-  return {
-    number: Math.max(1, Math.floor(Number(e.number) || 1)),
-    projectId: String(e.projectId || ''),
-    title: clean(e.title, 80),
-    summary_ko: clean(e.summary_ko, 400),
-    madeAt: Number(e.madeAt) || Date.now(),
-  };
-}
-
-/** 시리즈 전체의 기본 자막 모양 (정규화해서 저장, enabled 는 에피소드마다 따로 정하므로 뺀다). 없으면 null */
-function normalizeSubtitleStyle(v) {
-  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
-  const { enabled, ...look } = normalizeStyle(v); // eslint-disable-line no-unused-vars
-  return look;
-}
-
-function normalizeSeries(o = {}) {
-  const b = o.bible && typeof o.bible === 'object' ? o.bible : {};
-  return {
-    id: String(o.id || ''),
-    name: clean(o.name, 60) || '새 시리즈',
-    emoji: clean(o.emoji, 8) || '🌻',
-    characterIds: (Array.isArray(o.characterIds) ? o.characterIds : []).map(String).filter(Boolean).slice(0, 4),
-    bible: {
-      art_en: clean(b.art_en, 800) || DEFAULT_ART_STYLE,
-      world_ko: clean(b.world_ko, 800),
-      tone_ko: clean(b.tone_ko, 400),
-      notes_en: clean(b.notes_en, 800),
-    },
-    workflowId: String(o.workflowId || ''),
-    subtitleStyle: normalizeSubtitleStyle(o.subtitleStyle),
-    episodeCounter: Math.max(0, Math.floor(Number(o.episodeCounter) || 0)),
-    episodes: (Array.isArray(o.episodes) ? o.episodes : []).map(normalizeEpisode).sort((a, b) => a.number - b.number),
-    createdAt: Number(o.createdAt) || Date.now(),
-    updatedAt: Number(o.updatedAt) || Date.now(),
-  };
 }
 
 class SeriesStore {
@@ -88,7 +48,7 @@ class SeriesStore {
 
   save(patch) {
     const cur = patch.id ? this.get(patch.id) : null;
-    const id = cur ? cur.id : `ser-${Date.now().toString(36)}${crypto.randomBytes(2).toString('hex')}`;
+    const id = cur ? cur.id : newSeriesId();
     // 에피소드 기록과 번호는 화면에서 덮어쓰지 않는다 (기록 수정은 updateEpisode 로)
     const next = normalizeSeries({ ...(cur || {}), ...patch, id, episodes: cur ? cur.episodes : [], episodeCounter: cur ? cur.episodeCounter : 0 });
     next.updatedAt = Date.now();
@@ -136,4 +96,4 @@ class SeriesStore {
   }
 }
 
-module.exports = { SeriesStore, normalizeSeries, normalizeEpisode, normalizeSubtitleStyle };
+module.exports = { ...core, SeriesStore };

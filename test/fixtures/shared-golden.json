@@ -1,0 +1,789 @@
+{
+  "keyer": {
+    "inputs": {
+      "demoCel": "72b192a638c43905fd34175585dc6437bf3d15e2",
+      "demoCel2": "d3afcf2759f03f2b2e762ba0f538f732e087504b"
+    },
+    "demoCel": {
+      "ok": true,
+      "reason": null,
+      "key": [
+        0,
+        255,
+        0
+      ],
+      "bgFraction": "0.960368924",
+      "rgba": "312392f599c5e8947bff1b326ab263adf71f0470",
+      "alpha": "f62a3d02bd50fd59d4967d9add2b7a9887fb0c71"
+    },
+    "demoCelExact": {
+      "ok": true,
+      "reason": null,
+      "key": [
+        0,
+        255,
+        0
+      ],
+      "bgFraction": "0.960368924",
+      "rgba": "312392f599c5e8947bff1b326ab263adf71f0470",
+      "alpha": "f62a3d02bd50fd59d4967d9add2b7a9887fb0c71"
+    },
+    "demoCel2": {
+      "ok": true,
+      "reason": null,
+      "key": [
+        0,
+        255,
+        0
+      ],
+      "bgFraction": "0.960095486",
+      "rgba": "23b5b180b8fdde2a659b03033093726b35dbbbc6",
+      "alpha": "274cb827f966d49e68e4a8281eea0c0364b1a5a9"
+    },
+    "wrongKeyIsRejected": {
+      "ok": false,
+      "reason": "notkey",
+      "key": [
+        0,
+        255,
+        0
+      ],
+      "bgFraction": null,
+      "rgba": null,
+      "alpha": null
+    },
+    "noisyGreen": {
+      "ok": true,
+      "reason": null,
+      "key": [
+        12,
+        236,
+        24
+      ],
+      "bgFraction": "0.830954861",
+      "rgba": "7155e0b0bcfe6b4a8320ef7ed4b1e0018c7d5fef",
+      "alpha": "1f05b29e751e7636228e9edfaf992b26e7d1f2f4"
+    },
+    "noisyGreenSpill": {
+      "ok": true,
+      "reason": null,
+      "key": [
+        0,
+        255,
+        0
+      ],
+      "bgFraction": "0.831063368",
+      "rgba": "71e1a2191e9943013a13f89e6ed5c548faf651e0",
+      "alpha": "eab5f3d0bb167052c1d04806cdbaf038bf4fe61d"
+    },
+    "noisyMagenta": {
+      "ok": true,
+      "reason": null,
+      "key": [
+        250,
+        5,
+        248
+      ],
+      "bgFraction": "0.830954861",
+      "rgba": "fb408c2c9bba9e8cb51c1bb9039372f8c8f96aa7",
+      "alpha": "6ef6d0852e7645839e1589ed13d03239c925d293"
+    },
+    "fullPicture": {
+      "ok": false,
+      "reason": "border",
+      "key": [
+        127,
+        126,
+        127
+      ],
+      "bgFraction": null,
+      "rgba": null,
+      "alpha": null
+    },
+    "stats": {
+      "ref": {
+        "mean": [
+          "209.969006681",
+          "153.400722812",
+          "66.065819735"
+        ],
+        "std": [
+          "54.756985682",
+          "65.780755073",
+          "48.983181156"
+        ],
+        "n": 9131
+      },
+      "after": {
+        "mean": [
+          "217.317815967",
+          "152.934304982",
+          "57.943658908"
+        ],
+        "std": [
+          "50.730926061",
+          "66.306698289",
+          "48.847839928"
+        ],
+        "n": 9194
+      },
+      "stabilized": "6f9d3b147171fb3e3851ff025b2841840c89eaad"
+    },
+    "stabilizedFull": "c9c1eb248bab6493d7be8c9259cfb3c98bcb52c8",
+    "overKey": {
+      "green": "32d6da54a449acc4881a80037a6577675fcb00f7",
+      "magenta": "16ac6b1e2fa65b103deab704e3dae1d74cb5564f"
+    },
+    "hasRealAlpha": {
+      "keyed": true,
+      "opaque": false
+    },
+    "celDifference": {
+      "same": "0.000000000",
+      "pose": "0.188155033",
+      "shifted": "0.041860154",
+      "sizeMismatch": "1.000000000"
+    },
+    "keyColorFor": [
+      "#00ff00",
+      "#ff00ff",
+      "#ff00ff",
+      "#00ff00",
+      "#00ff00"
+    ],
+    "keyName": [
+      "magenta",
+      "green",
+      "green"
+    ],
+    "hex": {
+      "hexToRgb": [
+        [
+          10,
+          27,
+          44
+        ],
+        [
+          10,
+          27,
+          44
+        ],
+        null,
+        null,
+        null
+      ],
+      "rgbToHex": [
+        "#000000",
+        "#ff8107",
+        "#0a141e"
+      ]
+    },
+    "hsv": [
+      [
+        "0.000000000",
+        "1.000000000",
+        "1.000000000"
+      ],
+      [
+        "120.000000000",
+        "1.000000000",
+        "0.501960784"
+      ],
+      [
+        "229.411764706",
+        "0.850000000",
+        "0.784313725"
+      ],
+      [
+        "0.000000000",
+        "0.000000000",
+        "0.000000000"
+      ],
+      [
+        "0.000000000",
+        "0.000000000",
+        "0.501960784"
+      ]
+    ],
+    "median": [
+      3,
+      0,
+      9
+    ]
+  },
+  "processCel": {
+    "plain": {
+      "keyed": true,
+      "source": "#00ff00",
+      "width": 320,
+      "height": 180,
+      "stats": {
+        "mean": [
+          "209.971934370",
+          "154.566493955",
+          "66.097582038"
+        ],
+        "std": [
+          "54.986500054",
+          "65.084231195",
+          "49.192564883"
+        ],
+        "n": 2316
+      },
+      "cel": "f1f184d28506c3576da7105d96bfc047d50788c9",
+      "plate": "d788d8e3db04da386bdc6b02d942d64f058c6ee8"
+    },
+    "stabilized": {
+      "keyed": true,
+      "source": "#00ff00",
+      "width": 320,
+      "height": 180,
+      "stats": {
+        "mean": [
+          "208.971934370",
+          "153.240069085",
+          "65.964594128"
+        ],
+        "std": [
+          "54.986500054",
+          "65.547812849",
+          "48.854914991"
+        ],
+        "n": 2316
+      },
+      "cel": "5d4e60ae62a97ffb8283acda5847b5eb605ed92c",
+      "plate": "65ccc8c8989d7cfc530cb8f95d52301b192cdf38"
+    },
+    "exact": {
+      "keyed": true,
+      "source": "#00ff00",
+      "width": 320,
+      "height": 180,
+      "stats": {
+        "mean": [
+          "209.971934370",
+          "154.566493955",
+          "66.097582038"
+        ],
+        "std": [
+          "54.986500054",
+          "65.084231195",
+          "49.192564883"
+        ],
+        "n": 2316
+      },
+      "cel": "f1f184d28506c3576da7105d96bfc047d50788c9",
+      "plate": "d788d8e3db04da386bdc6b02d942d64f058c6ee8"
+    },
+    "wrongKey": {
+      "keyed": false,
+      "reason": "notkey",
+      "width": 320,
+      "height": 180
+    },
+    "alpha": {
+      "keyed": true,
+      "source": "alpha",
+      "plate": "c90cf2f9eb454ee1c3e501121274e7ba1f01f402"
+    },
+    "photo": {
+      "keyed": false,
+      "reason": "border"
+    }
+  },
+  "render": {
+    "1280x720": {
+      "hold": {
+        "len": 2764800,
+        "sha1": "3435d48444686e6d51940cfe03bb6ecabab4c2bc"
+      },
+      "pan": {
+        "len": 2764800,
+        "sha1": "1c8b498959d41886a4bea3330b4688974ff6d96e"
+      },
+      "zoom": {
+        "len": 2764800,
+        "sha1": "403f4cc1f544e6ddb63e6a2f0b64d3ee4db65deb"
+      },
+      "shake": {
+        "len": 2764800,
+        "sha1": "c9e10b52f635d6da94fc8c4cb66a2a41a6f72d07"
+      },
+      "boil-cel": {
+        "len": 3686400,
+        "sha1": "8ebc4c858288a5d825e08c46548fba3097b7de2d"
+      },
+      "pan-cel": {
+        "len": 3686400,
+        "sha1": "76736314b86d633b90f963530590f53aa3f47325"
+      },
+      "shakeOffsets": [
+        "-24.450237527",
+        "-4.047976723",
+        "0.175086618",
+        "0.512090341",
+        "1.249914263"
+      ]
+    },
+    "720x1280": {
+      "hold": {
+        "len": 2764800,
+        "sha1": "aace4626e5644e4589994eb2dc0440920e5ce61a"
+      },
+      "pan": {
+        "len": 2764800,
+        "sha1": "f5a521c4b15c49c980507eff3ab08bb3b1cdb6e8"
+      },
+      "zoom": {
+        "len": 2764800,
+        "sha1": "d0db4be40ebbd6b0dbc251ac8f3aa7887ce7b98b"
+      },
+      "shake": {
+        "len": 2764800,
+        "sha1": "bdf5833faadb3b17ac0cd32f5d21f23bd3dc464e"
+      },
+      "boil-cel": {
+        "len": 3686400,
+        "sha1": "d79079ee7d0257d1bef07798081ec98366cd1de6"
+      },
+      "pan-cel": {
+        "len": 3686400,
+        "sha1": "07f3eb76d7c7d6471ec887356cde463c11c01477"
+      },
+      "shakeOffsets": [
+        "-13.753258609",
+        "-7.196403064",
+        "0.175086618",
+        "0.512090341",
+        "1.249914263"
+      ]
+    },
+    "composite": "1de77acbf6d0ddef8c709a5b0f11178af841c4f0",
+    "applyFx": {
+      "fade_in": "8eb9184f1b658be85f45805fc39f5cf87c586078",
+      "fade_out": "8eb9184f1b658be85f45805fc39f5cf87c586078",
+      "flash": "1b69d29d025c18d54df3cd3b666a59ea7940874a",
+      "sparkle": "f140dc9874d6176118d4b4c4f2799ae9ccf89288",
+      "sparkle2": "c290a7054c67be7bfae65eca416d3481964c2430",
+      "all": "8c1b98cb3b26660f871ae201d28da6868e706255",
+      "none": "ada6c1b8095ff0f40148288a254472dfc8a76f4e"
+    },
+    "fxState": {
+      "fade_in": {
+        "fade": "0.307692308",
+        "flash": "0.000000000",
+        "sparkle": false,
+        "shake": "0.000000000"
+      },
+      "fade_out": {
+        "fade": "0.307692308",
+        "flash": "0.000000000",
+        "sparkle": false,
+        "shake": "0.000000000"
+      },
+      "flash": {
+        "fade": "1.000000000",
+        "flash": "0.637500000",
+        "sparkle": false,
+        "shake": "0.000000000"
+      },
+      "sparkle": {
+        "fade": "1.000000000",
+        "flash": "0.000000000",
+        "sparkle": true,
+        "shake": "0.000000000"
+      },
+      "sparkle2": {
+        "fade": "1.000000000",
+        "flash": "0.000000000",
+        "sparkle": true,
+        "shake": "0.000000000"
+      },
+      "all": {
+        "fade": "0.285714286",
+        "flash": "0.743750000",
+        "sparkle": true,
+        "shake": "0.928571429"
+      },
+      "none": {
+        "fade": "1.000000000",
+        "flash": "0.000000000",
+        "sparkle": false,
+        "shake": "0.000000000"
+      }
+    },
+    "blankImage": "b89e8388d3dca2fe0f92427c0a8f4dae34ffcd98",
+    "rand": [
+      "0.576720614",
+      "0.095325306",
+      "0.146970833",
+      "0.709350945"
+    ],
+    "parallaxFraming": [
+      [
+        "1.400000000",
+        "0.200000000",
+        "-0.300000000"
+      ],
+      [
+        "1.500000000",
+        "0.000000000",
+        "1.000000000"
+      ]
+    ]
+  },
+  "renderShot": {
+    "layered": {
+      "frames": 21,
+      "layered": true,
+      "written": 21,
+      "unique": 21,
+      "first": "b455146eb1e004af109464e75401a4c9d6c68a6d",
+      "last": "d79014e523b3c622cb485a5393ed80a2505cb65d",
+      "sha1": "28a5c6de13248e79b1f2ba562c543ef7f39fd056"
+    },
+    "flat": {
+      "frames": 16,
+      "layered": false,
+      "written": 16,
+      "unique": 16,
+      "first": "246f2ffa9729f392154b9ffa722f4548eb493ea9",
+      "last": "c6ec55387c2d99d3dc241a11fb24dde7787aa1bd",
+      "sha1": "416dab568c2646a4b3099036d0a1273477c218d7"
+    },
+    "zoomOut": {
+      "frames": 18,
+      "layered": true,
+      "written": 18,
+      "unique": 16,
+      "first": "3c0f642628272913b5e728583d0843ce44632c94",
+      "last": "4c613619d144d89fa1c92fa632c13bf899304eb3",
+      "sha1": "1515fd15a3b514f807585f751db2a9e444bd861d"
+    }
+  },
+  "audio": {
+    "samples120": {
+      "duration": 30,
+      "bpm": 120.2,
+      "beatPeriod": 0.499,
+      "beats": 60,
+      "downbeats": 15,
+      "bars": 16,
+      "first": [
+        0.36,
+        0.859,
+        1.358,
+        1.858
+      ],
+      "sha1": "e059c42acc2422b154f10e8a4c234f1bd97ce8f4"
+    },
+    "samples120NoPrior": {
+      "duration": 30,
+      "bpm": 120.2,
+      "beatPeriod": 0.499,
+      "beats": 60,
+      "downbeats": 15,
+      "bars": 16,
+      "first": [
+        0.36,
+        0.859,
+        1.358,
+        1.858
+      ],
+      "sha1": "e059c42acc2422b154f10e8a4c234f1bd97ce8f4"
+    },
+    "samples92": {
+      "duration": 20,
+      "bpm": 92.3,
+      "beatPeriod": 0.65,
+      "beats": 31,
+      "downbeats": 8,
+      "bars": 9,
+      "first": [
+        0.186,
+        0.836,
+        1.498,
+        2.148
+      ],
+      "sha1": "ce43af369a90593b97321d29c0ea18ddfcdef62d"
+    },
+    "tempo": [
+      "123.046875000"
+    ],
+    "fixOctave": [
+      "120.000000000",
+      "120.000000000",
+      "50.000000000",
+      "190.000000000"
+    ],
+    "file120": {
+      "duration": 30,
+      "bpm": 120.2,
+      "beatPeriod": 0.499,
+      "beats": 60,
+      "downbeats": 15,
+      "bars": 16,
+      "first": [
+        0.36,
+        0.859,
+        1.358,
+        1.858
+      ],
+      "sha1": "e059c42acc2422b154f10e8a4c234f1bd97ce8f4"
+    },
+    "fileEqualsSamples": true
+  },
+  "characters": {
+    "normalized": {
+      "sha1": "7864fabb336ee027cffa3ccab23ee33d49171096",
+      "name": "하 루",
+      "version": 3,
+      "palette": [
+        {
+          "name": "color 1",
+          "hex": "#aabbcc"
+        },
+        {
+          "name": "hair brown",
+          "hex": "#6b3e26"
+        },
+        {
+          "name": "color 6",
+          "hex": "#ffffff"
+        },
+        {
+          "name": "color 7",
+          "hex": "#a1b2c3"
+        }
+      ],
+      "rules": {
+        "must": [
+          "always wears the scarf",
+          "always wears the raincoat"
+        ],
+        "never": [
+          "never older than 12",
+          "never change hair color"
+        ]
+      },
+      "summaryLen": 900,
+      "bodyLen": 400,
+      "refs": [
+        {
+          "file": "refs/a.png",
+          "kind": "turnaround",
+          "label": "앞 옆 뒤",
+          "mime": "image/png"
+        },
+        {
+          "file": "refs/b.jpg",
+          "kind": "other",
+          "label": "",
+          "mime": "image/jpeg"
+        },
+        {
+          "file": "refs/c.png",
+          "kind": "expressions",
+          "label": "표정 표정 표정 표정 표정 표정 표정 표정 표정 표정 표정 표정 표정 표정 표정 표정 표정 표정 표정 표정 ",
+          "mime": "image/png"
+        }
+      ]
+    },
+    "empty": "81ab7aaa7a06921fcf3e2b067e461852975c24c0",
+    "helpers": {
+      "hex": [
+        "#ffffff",
+        "#aabbcc",
+        null,
+        null,
+        "#aabbcc",
+        null,
+        "#123456"
+      ],
+      "sniff": [
+        "image/png",
+        "image/jpeg",
+        null,
+        null,
+        null
+      ],
+      "validate": [
+        [],
+        [
+          "이름이 비어 있어요.",
+          "생김새 설명(영어)이 비어 있어요."
+        ],
+        [],
+        [
+          "기준 그림이 1장 이상 있어야 해요."
+        ]
+      ],
+      "locked": "a cheerful girl with a short brown bob and a long red scarf. a cheerful girl with a short brown bob and a long red scarf. a cheerful girl with a short brown bob and a long red scarf. a cheerful girl with a short brown bob and a long red scarf. a cheerful girl with a short brown bob and a long red scarf. a cheerful girl with a short brown bob and a long red scarf. a cheerful girl with a short brown bob and a long red scarf. a cheerful girl with a short brown bob and a long red scarf. a cheerful girl with a short brown bob and a long red scarf. a cheerful girl with a short brown bob and a long red scarf. a cheerful girl with a short brown bob and a long red scarf. a cheerful girl with a short brown bob and a long red scarf. a cheerful girl with a short brown bob and a long red scarf. a cheerful girl with a short brown bob and a long red scarf. a cheerful girl with a short brown bob and a l; face: round soft face, small nose; hair: short chestnut-brown bob; body: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; outfit: bright yellow raincoat, navy shorts; props: long red knitted scarf",
+      "palette": "color 1 #aabbcc, hair brown #6b3e26, color 6 #ffffff, color 7 #a1b2c3",
+      "block": "하 루 — LOCKED DESIGN (copy exactly, do not reinterpret): a cheerful girl with a short brown bob and a long red scarf. a cheerful girl with a short brown bob and a long red scarf. a cheerful girl with a short brown bob and a long red scarf. a cheerful girl with a short brown bob and a long red scarf. a cheerful girl with a short brown bob and a long red scarf. a cheerful girl with a short brown bob and a long red scarf. a cheerful girl with a short brown bob and a long red scarf. a cheerful girl with a short brown bob and a long red scarf. a cheerful girl with a short brown bob and a long red scarf. a cheerful girl with a short brown bob and a long red scarf. a cheerful girl with a short brown bob and a long red scarf. a cheerful girl with a short brown bob and a long red scarf. a cheerful girl with a short brown bob and a long red scarf. a cheerful girl with a short brown bob and a long red scarf. a cheerful girl with a short brown bob and a l; face: round soft face, small nose; hair: short chestnut-brown bob; body: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; outfit: bright yellow raincoat, navy shorts; props: long red knitted scarf\n하 루 color palette (use these exact colors): color 1 #aabbcc, hair brown #6b3e26, color 6 #ffffff, color 7 #a1b2c3\n하 루 MUST: always wears the scarf; always wears the raincoat\n하 루 NEVER: never older than 12; never change hair color"
+    },
+    "toAmchar": {
+      "sha1": "bb7b2226f830da19c7d552370220accc6df452ab",
+      "refs": [
+        [
+          "turnaround",
+          "앞 옆 뒤",
+          "image/png",
+          6668,
+          "1a0e3fa4e8e490c75a542aece0c7eae196afbac4"
+        ],
+        [
+          "other",
+          "",
+          "image/jpeg",
+          10372,
+          "10bcc2cf733eceb84d7a079ec50a85c699c573ba"
+        ],
+        [
+          "expressions",
+          "표정 표정 표정 표정 표정 표정 표정 표정 표정 표정 표정 표정 표정 표정 표정 표정 표정 표정 표정 표정",
+          "image/png",
+          8000,
+          "20bb39ffad1ac5905e2b30d4fdeed55fe0fa58ef"
+        ]
+      ],
+      "keys": [
+        "format",
+        "formatVersion",
+        "app",
+        "id",
+        "name",
+        "version",
+        "locked",
+        "palette",
+        "rules",
+        "personality_ko",
+        "description_ko",
+        "lockedAt",
+        "createdAt",
+        "updatedAt",
+        "refs"
+      ]
+    },
+    "fromAmchar": {
+      "character": "04c6c04f45ee12fa7a2a226387e40835d089544a",
+      "refs": [
+        [
+          "turnaround",
+          "앞 옆 뒤",
+          "image/png",
+          5000,
+          "7bc1f5b6bf066c5f97e35ec78bc43ccdcc877433"
+        ],
+        [
+          "other",
+          "",
+          "image/jpeg",
+          7777,
+          "c99c522a1bb544d5dea5325d417cb62613c7ba10"
+        ],
+        [
+          "expressions",
+          "표정 표정 표정 표정 표정 표정 표정 표정 표정 표정 표정 표정 표정 표정 표정 표정 표정 표정 표정 표정",
+          "image/png",
+          6000,
+          "917252b99e46e4cc2ddb8c16a902466580cf4454"
+        ]
+      ],
+      "bytesEqual": true
+    },
+    "fromAmcharInputs": [
+      "1f22ae4b9e330053a0ec6c3a921f195af04304cc",
+      "1f22ae4b9e330053a0ec6c3a921f195af04304cc",
+      "1f22ae4b9e330053a0ec6c3a921f195af04304cc",
+      "1f22ae4b9e330053a0ec6c3a921f195af04304cc"
+    ],
+    "fromAmcharWrapped": "7bc1f5b6bf066c5f97e35ec78bc43ccdcc877433",
+    "errors": [
+      "캐릭터 파일을 읽을 수 없어요. (.amchar 파일이 맞나요?)",
+      "캐릭터 파일을 읽을 수 없어요. (.amchar 파일이 맞나요?)",
+      "AnimeMaker 캐릭터 파일(.amchar)이 아니에요.",
+      "AnimeMaker 캐릭터 파일(.amchar)이 아니에요.",
+      "더 새로운 버전의 앱에서 만든 캐릭터 파일이에요. 앱을 업데이트해 주세요.",
+      "1번째 기준 그림이 PNG/JPEG 그림이 아니에요.",
+      "기준 그림이 너무 많아요. (6장까지)",
+      "캐릭터 파일에 문제가 있어요: 이름이 비어 있어요.",
+      "캐릭터 파일에 문제가 있어요: 생김새 설명(영어)이 비어 있어요.",
+      "캐릭터 파일에 문제가 있어요: 기준 그림이 1장 이상 있어야 해요.",
+      "1번째 기준 그림이 너무 커요.",
+      "1번째 기준 그림이 PNG/JPEG 그림이 아니에요."
+    ]
+  },
+  "series": {
+    "normalized": {
+      "sha1": "51fac1e9578de82d90c9c8b5b1c4b9ba057d3ae9",
+      "name": "하루의 비 오는 마을",
+      "emoji": "🌻🌻🌻🌻",
+      "characterIds": [
+        "a",
+        "2",
+        "b",
+        "c"
+      ],
+      "episodes": [
+        [
+          1,
+          "7",
+          80,
+          ""
+        ],
+        [
+          1,
+          "p1",
+          5,
+          "시작"
+        ],
+        [
+          3,
+          "p3",
+          8,
+          "하늘을 날다"
+        ]
+      ],
+      "counter": 7,
+      "art": 307,
+      "subtitleStyle": null
+    },
+    "empty": "b74709c7a07bc9283a93c4d7398267ae614ecf79",
+    "episode": "a6c0682aeaa8d712c148afb344625196faa4a1f5",
+    "keepsId": "abc"
+  },
+  "demo": {
+    "lyrics": "a1a421e06fa474c793e4d19408e9f718dfec77e4",
+    "character": "fa4fa5c9433fb0851f2f2e552a77d27ee009644c",
+    "plans": [
+      "27d40d80a1d85fb26fbe7a2ff08d9d51f3688a1a",
+      "9ec10b12fe0db9ec9f4113e3924d563a39203c67",
+      "d871c70bea0e3d210967dbfee6dc5f87a1b3f757"
+    ],
+    "xsheets": [
+      "27ff4a0959f4b25c46dce618161cbdd3b0f45fab",
+      "a3e2b7e2d4a0823f187605a1cb4d8fa799b48a07",
+      "4f78a629675dfbd85b488445b1789d404d054562",
+      "64c1ef8c29c8f3ec7548b67791ffeec337bcc52f"
+    ],
+    "figureBoxes": [
+      "95d000db3c277bda9e58159b94a41dc6aeb73248",
+      "0c0388e64265ca01d7297ffea50771db80783e04",
+      "0c0388e64265ca01d7297ffea50771db80783e04"
+    ]
+  },
+  "prompts": {
+    "plan": "801cf4055d4d0f19cda92ea241c09a04e1f19fb2",
+    "seriesBlock": "d1adb6536a698b74a99d3f357e016b53180da1ab",
+    "cel": "4410fd368a742c2223654fc1374ec1e8c7c5bb3a",
+    "celMagenta": "9b321e54c61995a48183cf7fe2571834447ae3de",
+    "drawing": "7b50eb56f13812f2a82cf8d6101cb6b7df729788",
+    "sheets": [
+      "a1c2f6b1f521296198120ccaae4e927d8fef87e1",
+      "3776745e4fa85678e05a904eb18ca747e59733ca",
+      "af056831e0cbc318dfc1d064410494ed57782c30"
+    ],
+    "describe": "e2553ed0e65a23f88b995a0f8e637b5a78f8d657"
+  }
+}

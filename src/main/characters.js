@@ -4,20 +4,17 @@
 //    (zip 같은 새 의존성 없이 메모장으로도 열어 볼 수 있다)
 //  - 앱 안에서는 userData/characters/<id>/ 폴더에 character.json + refs/*.png 로 풀어서 보관한다.
 //  - '잠그기(lock)' 를 하면 설명·색·규칙·기준 그림을 바꿀 수 없다. 모든 에피소드가 같은 주인공을 쓰게 하기 위해서다.
+//  - 순수 계산(normalizeCharacter, validateCharacter, characterBlock, toAmchar, fromAmchar …)은 characters-core.js 로 옮겨
+//    폰 앱·프롬프트 조립(pipeline/prompts.js)과 같은 파일을 쓴다. 여기서는 그 이름을 그대로 다시 내보내므로
+//    `require('./characters')` 는 예전과 똑같이 쓸 수 있다.
+//  - 여기에 남은 것: CharacterStore (userData/characters 폴더 읽고 쓰기 · ffmpeg 로 기준 그림을 PNG 로 바꾸기)와
+//    fromAmchar 의 Buffer 어댑터 (PC 쪽 호출자는 기준 그림을 예전처럼 Buffer 로 받는다).
 const fs = require('fs');
 const path = require('path');
-const crypto = require('crypto');
 const { runFfmpeg } = require('./media/ffmpeg');
+const core = require('./characters-core');
 
-const FORMAT = 'animemaker.character';
-const FORMAT_VERSION = 1;
-const LOCKED_FIELDS = ['summary', 'face', 'hair', 'eyes', 'body', 'outfit', 'props'];
-const REF_KINDS = ['turnaround', 'expressions', 'fullbody', 'other'];
-const REF_KIND_LABEL = { turnaround: '앞·옆·뒤 모습 (턴어라운드)', expressions: '표정 모음', fullbody: '전신', other: '기타' };
-const MAX_REFS = 6;
-const MAX_REF_BYTES = 12 * 1024 * 1024;
-const MAX_RULES = 12;
-const MAX_PALETTE = 12;
+const { REF_KINDS, REF_KIND_LABEL, MAX_REFS, MAX_REF_BYTES, sniffImage, cleanText, newId, normalizeCharacter, validateCharacter, toAmchar } = core;
 
 function readJson(file, fallback) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch (_) { return fallback; }
@@ -30,154 +27,10 @@ function writeJson(file, data) {
   try { fs.renameSync(tmp, file); } catch (_) { fs.writeFileSync(file, JSON.stringify(data, null, 2), 'utf8'); try { fs.unlinkSync(tmp); } catch (__) { /* noop */ } }
 }
 
-/** 파일 앞부분(매직 넘버)으로 그림 종류 판별 */
-function sniffImage(buf) {
-  if (!buf || buf.length < 8) return null;
-  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return 'image/png';
-  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'image/jpeg';
-  return null;
-}
-
-/** '#abc', 'abc', '#AABBCC' → '#aabbcc' (틀리면 null) */
-function normalizeHex(s) {
-  const m = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(String(s || '').trim());
-  if (!m) return null;
-  let h = m[1].toLowerCase();
-  if (h.length === 3) h = h.split('').map((c) => c + c).join('');
-  return `#${h}`;
-}
-
-function cleanText(s, max = 600) {
-  return String(s == null ? '' : s).replace(/\s+/g, ' ').trim().slice(0, max);
-}
-
-function cleanList(v, max = MAX_RULES) {
-  const arr = Array.isArray(v) ? v : String(v || '').split(/\r?\n/);
-  return arr.map((x) => cleanText(x, 200)).filter(Boolean).slice(0, max);
-}
-
-function newId() {
-  return `char-${Date.now().toString(36)}${crypto.randomBytes(3).toString('hex')}`;
-}
-
-/**
- * 캐릭터 메타데이터를 깔끔한 모양으로 (그림 데이터는 다루지 않음)
- * @returns {{id:string,name:string,version:number,locked:object,palette:{name:string,hex:string}[],rules:{must:string[],never:string[]},
- *   personality_ko:string,description_ko:string,refs:{file:string,kind:string,label:string,mime:string}[],lockedAt:number|null}}
- */
-function normalizeCharacter(o = {}) {
-  const locked = {};
-  const src = o.locked && typeof o.locked === 'object' ? o.locked : {};
-  for (const k of LOCKED_FIELDS) locked[k] = cleanText(src[k], k === 'summary' ? 900 : 400);
-  const palette = (Array.isArray(o.palette) ? o.palette : [])
-    .map((p, i) => (typeof p === 'string' ? { name: `color ${i + 1}`, hex: p } : p || {}))
-    .map((p, i) => ({ name: cleanText(p.name, 40) || `color ${i + 1}`, hex: normalizeHex(p.hex) }))
-    .filter((p) => p.hex)
-    .slice(0, MAX_PALETTE);
-  const rules = o.rules && typeof o.rules === 'object' ? o.rules : {};
-  return {
-    id: String(o.id || ''),
-    name: cleanText(o.name, 40),
-    version: Math.max(1, Math.floor(Number(o.version) || 1)),
-    locked,
-    palette,
-    rules: { must: cleanList(rules.must), never: cleanList(rules.never) },
-    personality_ko: cleanText(o.personality_ko, 600),
-    description_ko: cleanText(o.description_ko, 1200),
-    refs: (Array.isArray(o.refs) ? o.refs : []).slice(0, MAX_REFS).map((r) => ({
-      file: String(r.file || ''),
-      kind: REF_KINDS.includes(r.kind) ? r.kind : 'other',
-      label: cleanText(r.label, 60),
-      mime: r.mime === 'image/jpeg' ? 'image/jpeg' : 'image/png',
-    })),
-    lockedAt: o.lockedAt ? Number(o.lockedAt) : null,
-    createdAt: Number(o.createdAt) || Date.now(),
-    updatedAt: Number(o.updatedAt) || Date.now(),
-  };
-}
-
-/**
- * 문제 목록 (한국어). 비어 있으면 통과.
- * @param {{requireRefs?:boolean}} [opts] 잠그거나 에피소드에 쓰려면 기준 그림이 1장 이상 있어야 한다
- */
-function validateCharacter(c, opts = {}) {
-  const errs = [];
-  if (!c.name) errs.push('이름이 비어 있어요.');
-  if (!c.locked.summary && !LOCKED_FIELDS.slice(1).some((k) => c.locked[k])) errs.push('생김새 설명(영어)이 비어 있어요.');
-  if (c.refs.length > MAX_REFS) errs.push(`기준 그림은 ${MAX_REFS}장까지예요.`);
-  if (opts.requireRefs && !c.refs.length) errs.push('기준 그림이 1장 이상 있어야 해요.');
-  return errs;
-}
-
-/** 이미지 생성 프롬프트에 그대로 붙이는 '고정 설명' (영어) */
-function lockedText(c) {
-  const L = c.locked || {};
-  const parts = [];
-  if (L.summary) parts.push(L.summary);
-  for (const k of LOCKED_FIELDS.slice(1)) if (L[k]) parts.push(`${k}: ${L[k]}`);
-  return parts.join('; ');
-}
-
-function paletteText(c) {
-  return (c.palette || []).map((p) => `${p.name} ${p.hex}`).join(', ');
-}
-
-/** 캐릭터 한 명의 '절대 규칙' 블록 (영어, 모든 그림 요청에 그대로 들어간다) */
-function characterBlock(c) {
-  const lines = [`${c.name} — LOCKED DESIGN (copy exactly, do not reinterpret): ${lockedText(c)}`];
-  if (c.palette && c.palette.length) lines.push(`${c.name} color palette (use these exact colors): ${paletteText(c)}`);
-  if (c.rules && c.rules.must && c.rules.must.length) lines.push(`${c.name} MUST: ${c.rules.must.join('; ')}`);
-  if (c.rules && c.rules.never && c.rules.never.length) lines.push(`${c.name} NEVER: ${c.rules.never.join('; ')}`);
-  return lines.join('\n');
-}
-
-/** 저장된 캐릭터 + 기준 그림 버퍼 → .amchar 객체 */
-function toAmchar(c, refBuffers) {
-  const n = normalizeCharacter(c);
-  return {
-    format: FORMAT,
-    formatVersion: FORMAT_VERSION,
-    app: 'AnimeMaker V2',
-    id: n.id,
-    name: n.name,
-    version: n.version,
-    locked: n.locked,
-    palette: n.palette,
-    rules: n.rules,
-    personality_ko: n.personality_ko,
-    description_ko: n.description_ko,
-    lockedAt: n.lockedAt,
-    createdAt: n.createdAt,
-    updatedAt: n.updatedAt,
-    refs: n.refs.map((r, i) => ({ kind: r.kind, label: r.label, mime: sniffImage(refBuffers[i]) || r.mime, data: refBuffers[i].toString('base64') })),
-  };
-}
-
-/**
- * .amchar 내용(문자열 또는 객체) → { character, refs: [{kind,label,mime,buffer}] }
- * 형식이 틀리면 한국어 설명이 담긴 Error 를 던진다.
- */
+/** .amchar 내용 → { character, refs: [{kind,label,mime,buffer}] }: characters-core 의 fromAmchar 와 같고, buffer 만 Node Buffer 로 (복사 없이 감싼다) */
 function fromAmchar(input) {
-  let o = input;
-  if (typeof input === 'string' || Buffer.isBuffer(input)) {
-    try { o = JSON.parse(String(input).replace(/^﻿/, '')); } catch (_) { throw new Error('캐릭터 파일을 읽을 수 없어요. (.amchar 파일이 맞나요?)'); }
-  }
-  if (!o || typeof o !== 'object' || o.format !== FORMAT) throw new Error('AnimeMaker 캐릭터 파일(.amchar)이 아니에요.');
-  if (Number(o.formatVersion) > FORMAT_VERSION) throw new Error('더 새로운 버전의 앱에서 만든 캐릭터 파일이에요. 앱을 업데이트해 주세요.');
-  const rawRefs = Array.isArray(o.refs) ? o.refs : [];
-  if (rawRefs.length > MAX_REFS) throw new Error(`기준 그림이 너무 많아요. (${MAX_REFS}장까지)`);
-  const refs = rawRefs.map((r, i) => {
-    let buf;
-    try { buf = Buffer.from(String((r && r.data) || ''), 'base64'); } catch (_) { buf = Buffer.alloc(0); }
-    const mime = sniffImage(buf);
-    if (!mime) throw new Error(`${i + 1}번째 기준 그림이 PNG/JPEG 그림이 아니에요.`);
-    if (buf.length > MAX_REF_BYTES) throw new Error(`${i + 1}번째 기준 그림이 너무 커요.`);
-    return { kind: REF_KINDS.includes(r.kind) ? r.kind : 'other', label: cleanText(r.label, 60), mime, buffer: buf };
-  });
-  const character = normalizeCharacter({ ...o, refs: refs.map((r) => ({ kind: r.kind, label: r.label, mime: r.mime, file: '' })) });
-  const errs = validateCharacter(character, { requireRefs: !!character.lockedAt });
-  if (errs.length) throw new Error(`캐릭터 파일에 문제가 있어요: ${errs.join(' ')}`);
-  return { character, refs };
+  const out = core.fromAmchar(input);
+  return { ...out, refs: out.refs.map((r) => ({ ...r, buffer: Buffer.from(r.buffer.buffer, r.buffer.byteOffset, r.buffer.byteLength) })) };
 }
 
 class CharacterStore {
@@ -329,8 +182,4 @@ class CharacterStore {
   }
 }
 
-module.exports = {
-  FORMAT, FORMAT_VERSION, LOCKED_FIELDS, REF_KINDS, REF_KIND_LABEL, MAX_REFS,
-  sniffImage, normalizeHex, normalizeCharacter, validateCharacter, lockedText, paletteText, characterBlock,
-  toAmchar, fromAmchar, CharacterStore,
-};
+module.exports = { ...core, fromAmchar, CharacterStore };

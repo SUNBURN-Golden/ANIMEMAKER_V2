@@ -67,6 +67,7 @@ contextBridge.exposeInMainWorld('api', {
   previewShot: (id, shot) => call('proj:previewShot', id, shot),
   applyChanges: (id) => call('proj:applyChanges', id),
   setMotion: (id, patch) => call('proj:setMotion', id, patch),
+  estimateMotion: (id, patch) => call('proj:estimateMotion', id, patch),
   setSubtitleStyle: (id, style, opts) => call('proj:setSubtitleStyle', id, style, opts),
   setLyricLines: (id, lines) => call('proj:setLyricLines', id, lines),
   saveSubtitles: (id, o) => call('proj:saveSubtitles', id, o),
