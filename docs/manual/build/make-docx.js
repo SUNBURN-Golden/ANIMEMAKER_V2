@@ -6,7 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const {
   Document, Packer, Paragraph, TextRun, ImageRun, Table, TableRow, TableCell, AlignmentType,
-  WidthType, BorderStyle, ShadingType, LevelFormat, Footer, PageNumber, PageBreak, HeightRule,
+  WidthType, BorderStyle, ShadingType, LevelFormat, Footer, PageNumber, PageBreak, HeightRule, LineRuleType,
 } = require('docx');
 const content = require('./content');
 
@@ -20,7 +20,7 @@ const C = {
   tip: 'E8F7EE', tipBar: '16A34A', warn: 'FFF4E0', warnBar: 'D97706', adult: 'FDECEC', adultBar: 'DC2626', info: 'EEF2FF', infoBar: '4F46E5',
 };
 const PAGE_W = 11906; // A4 (DXA)
-const MARGIN = 1134; // 2cm
+const MARGIN = 1020; // 1.8cm
 const CONTENT_W = PAGE_W - MARGIN * 2;
 
 /** "**굵게**" 표시를 TextRun 들로 */
@@ -55,6 +55,7 @@ function boxColors(kind) {
   })[kind] || [C.info, C.infoBar, '알아 두기'];
 }
 
+const boxChars = (b) => String(b.text || '').length + (b.items || []).reduce((a, x) => a + String(x).length, 0);
 let stepsInstance = 0;
 const children = [];
 
@@ -92,60 +93,60 @@ for (const b of content) {
       break;
     case 'h1':
       children.push(new Paragraph({
-        pageBreakBefore: false, keepNext: true, spacing: { before: 520, after: 200 },
+        pageBreakBefore: false, keepNext: true, spacing: { before: 420, after: 160 },
         border: { bottom: { style: BorderStyle.SINGLE, size: 12, color: C.violet, space: 6 } },
         children: runs(b.text, { bold: true, size: 36, color: C.violet, font: HEAD_FONT }),
       }));
       break;
     case 'h2':
       children.push(new Paragraph({
-        keepNext: true, spacing: { before: 320, after: 140 },
+        keepNext: true, spacing: { before: 250, after: 110 },
         children: [new TextRun({ text: '■ ', color: C.violet, size: 28, font: { name: HEAD_FONT, eastAsia: HEAD_FONT } }), ...runs(b.text, { bold: true, size: 28, color: C.ink, font: HEAD_FONT })],
       }));
       break;
     case 'p':
-      children.push(new Paragraph({ spacing: { after: 160, line: 380 }, children: runs(b.text, { size: 24 }) }));
+      children.push(new Paragraph({ spacing: { after: 120, line: 325 }, children: runs(b.text, { size: 22 }) }));
       break;
     case 'steps': {
       const instance = ++stepsInstance;
       for (const it of b.items) {
         children.push(new Paragraph({
           numbering: { reference: 'steps', level: 0, instance },
-          spacing: { after: 120, line: 360 },
-          children: runs(it, { size: 24 }),
+          spacing: { after: 80, line: 305 },
+          children: runs(it, { size: 22 }),
         }));
       }
-      children.push(new Paragraph({ spacing: { after: 60 } }));
+      children.push(new Paragraph({ spacing: { after: 30 } }));
       break;
     }
     case 'bullets':
       for (const it of b.items) {
-        children.push(new Paragraph({ numbering: { reference: 'bullets', level: 0 }, spacing: { after: 140, line: 360 }, children: runs(it, { size: 24 }) }));
+        children.push(new Paragraph({ numbering: { reference: 'bullets', level: 0 }, spacing: { after: 85, line: 305 }, children: runs(it, { size: 22 }) }));
       }
       break;
     case 'box': {
       const [fill, bar, label] = boxColors(b.kind);
-      const paras = [new Paragraph({ spacing: { after: 100 }, children: runs(`${label} | ${b.title}`, { bold: true, size: 24, color: bar, font: HEAD_FONT }) })];
-      if (b.text) paras.push(new Paragraph({ spacing: { after: 60, line: 340 }, children: runs(b.text, { size: 22 }) }));
+      const paras = [new Paragraph({ spacing: { after: 80 }, children: runs(`${label} | ${b.title}`, { bold: true, size: 22, color: bar, font: HEAD_FONT }) })];
+      if (b.text) paras.push(new Paragraph({ spacing: { after: 40, line: 310 }, children: runs(b.text, { size: 21 }) }));
       for (const it of b.items || []) {
-        paras.push(new Paragraph({ numbering: { reference: 'bullets', level: 0 }, spacing: { after: 60, line: 340 }, children: runs(it, { size: 22 }) }));
+        paras.push(new Paragraph({ numbering: { reference: 'bullets', level: 0 }, spacing: { after: 40, line: 310 }, children: runs(it, { size: 21 }) }));
       }
       const none = { style: BorderStyle.NONE, size: 0, color: 'FFFFFF' };
       children.push(new Table({
         width: { size: CONTENT_W, type: WidthType.DXA },
         columnWidths: [CONTENT_W],
         rows: [new TableRow({
-          cantSplit: true,
+          cantSplit: boxChars(b) < 700, // 아주 긴 상자만 쪽 사이에서 나뉘게 한다
           children: [new TableCell({
             width: { size: CONTENT_W, type: WidthType.DXA },
             shading: { type: ShadingType.CLEAR, fill, color: 'auto' },
-            margins: { top: 140, bottom: 140, left: 220, right: 220 },
+            margins: { top: 100, bottom: 100, left: 200, right: 200 },
             borders: { left: { style: BorderStyle.SINGLE, size: 36, color: bar }, top: none, bottom: none, right: none },
             children: paras,
           })],
         })],
       }));
-      children.push(new Paragraph({ spacing: { after: 160 } }));
+      children.push(new Paragraph({ spacing: { after: 100 } }));
       break;
     }
     case 'img': {
@@ -154,10 +155,10 @@ for (const b of content) {
       const widthPx = Math.round((b.width || 15) / 2.54 * 96);
       const heightPx = Math.round((widthPx * h) / w);
       children.push(new Paragraph({
-        alignment: AlignmentType.CENTER, keepNext: true, spacing: { before: 120, after: 60 },
+        alignment: AlignmentType.CENTER, keepNext: true, spacing: { before: 80, after: 30 },
         children: [new ImageRun({ type: 'png', data: fs.readFileSync(file), transformation: { width: widthPx, height: heightPx } })],
       }));
-      children.push(new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 220 }, children: runs(`▲ ${b.caption}`, { size: 20, color: C.muted }) }));
+      children.push(new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 150 }, children: runs(`▲ ${b.caption}`, { size: 18, color: C.muted }) }));
       break;
     }
     case 'table': {
@@ -169,8 +170,8 @@ for (const b of content) {
         width: { size: widths[i], type: WidthType.DXA },
         borders,
         shading: { type: ShadingType.CLEAR, fill: head ? C.violet : (zebra ? 'FAF8FF' : 'FFFFFF'), color: 'auto' },
-        margins: { top: 90, bottom: 90, left: 120, right: 120 },
-        children: [new Paragraph({ alignment: text === '□' ? AlignmentType.CENTER : AlignmentType.LEFT, children: runs(text, { size: head ? 22 : 21, bold: head, color: head ? 'FFFFFF' : undefined }) })],
+        margins: { top: 45, bottom: 45, left: 110, right: 110 },
+        children: [new Paragraph({ alignment: text === '□' ? AlignmentType.CENTER : AlignmentType.LEFT, children: runs(text, { size: head ? 21 : 20, bold: head, color: head ? 'FFFFFF' : undefined }) })],
       });
       children.push(new Table({
         width: { size: CONTENT_W, type: WidthType.DXA },
@@ -180,7 +181,7 @@ for (const b of content) {
           ...b.rows.map((r, ri) => new TableRow({ cantSplit: true, children: r.map((t, i) => cell(t, i, false, ri % 2 === 1)) })),
         ],
       }));
-      children.push(new Paragraph({ spacing: { after: 200 } }));
+      children.push(new Paragraph({ spacing: { after: 120 } }));
       break;
     }
     default:
@@ -188,11 +189,16 @@ for (const b of content) {
   }
 }
 
+// 문서 맨 끝의 빈 문단이 새 쪽을 만들지 않게 아주 작게 만든다
+if (children.length && ['box', 'table'].includes(content[content.length - 1].t)) {
+  children[children.length - 1] = new Paragraph({ spacing: { before: 0, after: 0, line: 20, lineRule: LineRuleType.EXACT }, children: [new TextRun({ text: '', size: 2 })] });
+}
+
 const doc = new Document({
   creator: 'AnimeMaker',
-  title: 'AnimeMaker 사용 설명서',
-  description: '초등학생도 따라 할 수 있는 AnimeMaker 사용 설명서',
-  styles: { default: { document: { run: { font: { name: BODY_FONT, eastAsia: BODY_FONT }, size: 24, color: C.ink } } } },
+  title: 'AnimeMaker V2 사용 설명서',
+  description: '초등학생도 따라 할 수 있는 AnimeMaker V2 사용 설명서 (컴퓨터 + 안드로이드 폰)',
+  styles: { default: { document: { run: { font: { name: BODY_FONT, eastAsia: BODY_FONT }, size: 22, color: C.ink } } } },
   numbering: {
     config: [
       { reference: 'steps', levels: [{ level: 0, format: LevelFormat.DECIMAL, text: '%1.', alignment: AlignmentType.LEFT,
@@ -202,7 +208,7 @@ const doc = new Document({
     ],
   },
   sections: [{
-    properties: { page: { size: { width: PAGE_W, height: 16838 }, margin: { top: MARGIN, bottom: MARGIN, left: MARGIN, right: MARGIN } }, titlePage: true },
+    properties: { page: { size: { width: PAGE_W, height: 16838 }, margin: { top: 1000, bottom: 1000, left: MARGIN, right: MARGIN } }, titlePage: true },
     footers: {
       default: new Footer({ children: [new Paragraph({ alignment: AlignmentType.CENTER, children: [
         new TextRun({ text: '- ', color: C.muted, size: 18 }), new TextRun({ children: [PageNumber.CURRENT], color: C.muted, size: 18 }), new TextRun({ text: ' -', color: C.muted, size: 18 })] })] }),

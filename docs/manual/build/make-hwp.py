@@ -56,7 +56,7 @@ class Builder:
         self.doc = HwpxDocument.new()
         self.first = True
 
-    def para(self, text="", *, size=12, bold=False, color=None, align=None, before=0, after=6, line=160,
+    def para(self, text="", *, size=11, bold=False, color=None, align=None, before=0, after=5, line=150,
              indent=0, page_break=False, keep_next=False):
         if self.first:
             # 새 문서에는 빈 첫 문단이 있다 → 그걸 쓴다
@@ -84,14 +84,14 @@ class Builder:
             data = f.read()
         pic = self.doc.add_picture(data, "png", width_mm=width_mm, height_mm=height_mm, align="center")
         if caption:
-            self.para(f"▲ {caption}", size=10, color=MUTED, align="CENTER", after=10)
+            self.para(f"▲ {caption}", size=9, color=MUTED, align="CENTER", after=8)
         return pic
 
     def table(self, head, rows, widths_pct, *, head_fill=VIOLET):
         ncols = len(head)
         t = self.doc.add_table(len(rows) + 1, ncols, width=None)
-        head_style = self.doc.styles.ensure_run(bold=True, color="#FFFFFF", size=10.5, font=FONT)
-        body_style = self.doc.styles.ensure_run(size=10.5, font=FONT)
+        head_style = self.doc.styles.ensure_run(bold=True, color="#FFFFFF", size=10, font=FONT)
+        body_style = self.doc.styles.ensure_run(size=10, font=FONT)
         for c, txt in enumerate(head):
             cell = t.cell(0, c)
             cell.text = plain(txt)
@@ -120,7 +120,7 @@ class Builder:
         t = self.doc.add_table(1, 1)
         cell = t.cell(0, 0)
         cell.text = f"{label} | {title}"
-        title_style = self.doc.styles.ensure_run(bold=True, color=bar, size=12, font=FONT)
+        title_style = self.doc.styles.ensure_run(bold=True, color=bar, size=11, font=FONT)
         for run in cell.paragraphs[0].runs:
             run.element.set("charPrIDRef", str(title_style))
         lines = []
@@ -131,7 +131,7 @@ class Builder:
         for line in lines:
             p = cell.add_paragraph("")
             for seg, b in segments(line):
-                p.add_run(seg, bold=b, size=11, font=FONT, color=INK if b else None)
+                p.add_run(seg, bold=b, size=10.5, font=FONT, color=INK if b else None)
         t.set_cell_shading(0, 0, fill)
         cell.set_size(width=42520)
         self.para("", size=6, after=4)
@@ -154,19 +154,19 @@ class Builder:
                 pass  # 차례·1장 앞에서 page_break 로 처리
             elif t == "h1":
                 first_chapter = b["text"].startswith("1장")
-                self.para(b["text"], size=18, bold=True, color=VIOLET, before=16, after=8,
+                self.para(b["text"], size=17, bold=True, color=VIOLET, before=12, after=6,
                           keep_next=True, page_break=first_chapter)
             elif t == "h2":
-                self.para("■ " + b["text"], size=14, bold=True, before=10, after=6, keep_next=True)
+                self.para("■ " + b["text"], size=13, bold=True, before=8, after=5, keep_next=True)
             elif t == "p":
-                self.para(b["text"], size=12, after=7)
+                self.para(b["text"], size=11, after=6)
             elif t == "steps":
                 for i, it in enumerate(b["items"], start=1):
-                    self.para(f"**{i}.** {it}", size=12, indent=4, after=5)
+                    self.para(f"**{i}.** {it}", size=11, indent=4, after=4)
                 self.para("", size=6, after=2)
             elif t == "bullets":
                 for it in b["items"]:
-                    self.para(f"• {it}", size=12, indent=4, after=6)
+                    self.para(f"• {it}", size=11, indent=4, after=5)
             elif t == "box":
                 self.box(b["kind"], b["title"], b.get("text"), b.get("items"))
             elif t == "img":
